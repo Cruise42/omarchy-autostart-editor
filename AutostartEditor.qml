@@ -502,16 +502,19 @@ Item {
 
                     GridLayout {
                       id: applicationGrid
+                      readonly property bool compact: width < 1080
                       anchors.left: parent.left
                       anchors.right: parent.right
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.margins: Style.space(8)
-                      columns: window.width >= 900 ? 6 : 2
+                      columns: compact ? 2 : 6
                       columnSpacing: Style.space(10)
                       rowSpacing: Style.space(8)
 
                       FieldColumn {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: applicationGrid.compact ? 0 : 150
+                        Layout.preferredWidth: 200
                         label: "Name"
                         content: Ui.TextField {
                           width: parent.width
@@ -521,6 +524,8 @@ Item {
                       }
                       FieldColumn {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: applicationGrid.compact ? 0 : 150
+                        Layout.preferredWidth: 200
                         label: modelData.matchType === "title" ? "App / initial title" : "App / window class"
                         content: Text {
                           width: parent.width
@@ -535,7 +540,9 @@ Item {
                       }
                       FieldColumn {
                         Layout.fillWidth: true
-                        Layout.columnSpan: window.width >= 900 ? 1 : 2
+                        Layout.minimumWidth: applicationGrid.compact ? 0 : 260
+                        Layout.preferredWidth: 380
+                        Layout.columnSpan: applicationGrid.compact ? 2 : 1
                         label: "Command"
                         content: Ui.TextField {
                           width: parent.width
@@ -546,7 +553,9 @@ Item {
                         }
                       }
                       FieldColumn {
-                        Layout.preferredWidth: 115
+                        Layout.fillWidth: applicationGrid.compact
+                        Layout.minimumWidth: applicationGrid.compact ? 0 : 115
+                        Layout.preferredWidth: 125
                         label: "Workspace"
                         content: Ui.Dropdown {
                           width: parent.width
@@ -557,7 +566,9 @@ Item {
                         }
                       }
                       FieldColumn {
-                        Layout.preferredWidth: 90
+                        Layout.fillWidth: applicationGrid.compact
+                        Layout.minimumWidth: applicationGrid.compact ? 0 : 90
+                        Layout.preferredWidth: 100
                         label: "Delay"
                         content: Ui.NumberField {
                           width: parent.width
@@ -572,7 +583,10 @@ Item {
                         }
                       }
                       ColumnLayout {
-                        Layout.preferredWidth: 125
+                        Layout.fillWidth: applicationGrid.compact
+                        Layout.minimumWidth: applicationGrid.compact ? 0 : 135
+                        Layout.preferredWidth: 145
+                        Layout.columnSpan: applicationGrid.compact ? 2 : 1
                         spacing: Style.space(4)
                         Text {
                           text: "Launch"
@@ -724,6 +738,7 @@ Item {
     }
     Loader {
       Layout.fillWidth: true
+      Layout.minimumWidth: 0
       sourceComponent: parent.content
     }
   }
