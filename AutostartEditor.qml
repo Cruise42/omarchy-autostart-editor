@@ -467,35 +467,20 @@ Item {
               }
             }
 
-            QQC.ScrollView {
+            ListView {
+              id: applicationList
               Layout.fillWidth: true
               Layout.fillHeight: true
               clip: true
-              QQC.ScrollBar.horizontal.policy: QQC.ScrollBar.AlwaysOff
+              spacing: Style.space(6)
+              model: root.applications
+              QQC.ScrollBar.vertical: QQC.ScrollBar {}
 
-              ColumnLayout {
-                width: parent.width
-                spacing: Style.space(6)
-
-                Text {
-                  visible: root.applications.length === 0 && !root.loading
-                  Layout.fillWidth: true
-                  Layout.topMargin: Style.space(24)
-                  text: "No login applications configured. Choose an installed application above."
-                  color: root.muted
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                  horizontalAlignment: Text.AlignHCenter
-                  wrapMode: Text.WordWrap
-                }
-
-                Repeater {
-                  model: root.applications
-
-                  delegate: Ui.BorderSurface {
+              delegate: Ui.BorderSurface {
                     required property int index
                     required property var modelData
-                    Layout.fillWidth: true
+                    width: ListView.view.width
+                    height: implicitHeight
                     implicitHeight: applicationLayout.implicitHeight + Style.space(16)
                     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
                     radius: Style.cornerRadius
@@ -652,8 +637,18 @@ Item {
                         }
                       }
                     }
-                  }
-                }
+              }
+
+              Text {
+                anchors.centerIn: parent
+                width: Math.max(0, parent.width - Style.space(48))
+                visible: root.applications.length === 0 && !root.loading
+                text: "No login applications configured. Choose an installed application above."
+                color: root.muted
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
               }
             }
           }
