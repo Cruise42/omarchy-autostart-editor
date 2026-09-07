@@ -7,9 +7,9 @@ Hyprland Lua or XDG autostart files.
 > This project is an early development version. Review generated changes and
 > keep backups before using it on an important session.
 
-<img src="docs/panel.jpg" alt="The Autostart Editor panel: workspace names and
-monitor assignments above, login applications with command, workspace, delay and
-launch state below" width="620">
+![The Autostart Editor panel: workspace names and monitor assignments above,
+login applications with their command, workspace, delay and launch
+state below](docs/panel.jpg)
 
 ## Design
 
