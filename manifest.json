@@ -2,15 +2,24 @@
   "schemaVersion": 1,
   "id": "cruise42.autostart-editor",
   "name": "Autostart Editor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Cruise42",
   "license": "MIT",
   "description": "Manage login applications and their Hyprland workspaces from an adaptive Omarchy panel.",
   "kinds": [
-    "panel"
+    "panel",
+    "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "panel": "AutostartEditor.qml"
+    "panel": "AutostartEditor.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Autostart Editor",
+    "description": "Opens the Autostart Editor panel",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
   }
 }

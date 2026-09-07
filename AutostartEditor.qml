@@ -28,6 +28,10 @@ Item {
   property var installedApplications: []
 
   readonly property string pluginId: "cruise42.autostart-editor"
+  // The host prefers a panel's own `opened` flag over its bookkeeping when
+  // deciding which way to toggle, so report the window itself. Reading the
+  // window keeps the answer true even when it is dismissed by its decoration.
+  readonly property bool opened: window.visible
   readonly property string backendPath: {
     if (manifest && manifest.__sourceDir)
       return String(manifest.__sourceDir) + "/backend/autostart_editor_backend.py"
