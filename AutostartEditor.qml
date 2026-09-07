@@ -496,53 +496,50 @@ Item {
                     required property int index
                     required property var modelData
                     Layout.fillWidth: true
-                    implicitHeight: applicationGrid.implicitHeight + Style.space(16)
+                    implicitHeight: applicationLayout.implicitHeight + Style.space(16)
                     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
                     radius: Style.cornerRadius
 
-                    GridLayout {
-                      id: applicationGrid
-                      readonly property bool compact: width < 1080
+                    ColumnLayout {
+                      id: applicationLayout
                       anchors.left: parent.left
                       anchors.right: parent.right
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.margins: Style.space(8)
-                      columns: compact ? 2 : 6
-                      columnSpacing: Style.space(10)
-                      rowSpacing: Style.space(8)
+                      spacing: Style.space(8)
+
+                      RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Style.space(10)
+
+                        FieldColumn {
+                          Layout.fillWidth: true
+                          label: "Name"
+                          content: Ui.TextField {
+                            width: parent.width
+                            text: modelData.name
+                            onEditingFinished: root.updateApplication(index, "name", text.trim())
+                          }
+                        }
+
+                        FieldColumn {
+                          Layout.fillWidth: true
+                          label: modelData.matchType === "title" ? "App / initial title" : "App / window class"
+                          content: Text {
+                            width: parent.width
+                            height: Style.spacing.controlHeight
+                            text: modelData.windowClass
+                            color: root.muted
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideMiddle
+                          }
+                        }
+                      }
 
                       FieldColumn {
                         Layout.fillWidth: true
-                        Layout.minimumWidth: applicationGrid.compact ? 0 : 150
-                        Layout.preferredWidth: 200
-                        label: "Name"
-                        content: Ui.TextField {
-                          width: parent.width
-                          text: modelData.name
-                          onEditingFinished: root.updateApplication(index, "name", text.trim())
-                        }
-                      }
-                      FieldColumn {
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: applicationGrid.compact ? 0 : 150
-                        Layout.preferredWidth: 200
-                        label: modelData.matchType === "title" ? "App / initial title" : "App / window class"
-                        content: Text {
-                          width: parent.width
-                          height: Style.spacing.controlHeight
-                          text: modelData.windowClass
-                          color: root.muted
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.bodySmall
-                          verticalAlignment: Text.AlignVCenter
-                          elide: Text.ElideMiddle
-                        }
-                      }
-                      FieldColumn {
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: applicationGrid.compact ? 0 : 260
-                        Layout.preferredWidth: 380
-                        Layout.columnSpan: applicationGrid.compact ? 2 : 1
                         label: "Command"
                         content: Ui.TextField {
                           width: parent.width
@@ -552,65 +549,70 @@ Item {
                           onEditingFinished: root.updateApplication(index, "command", text.trim())
                         }
                       }
-                      FieldColumn {
-                        Layout.fillWidth: applicationGrid.compact
-                        Layout.minimumWidth: applicationGrid.compact ? 0 : 115
-                        Layout.preferredWidth: 125
-                        label: "Workspace"
-                        content: Ui.Dropdown {
-                          width: parent.width
-                          showLabel: false
-                          options: root.workspaces.map(function(item) { return String(item.id) })
-                          value: String(modelData.workspace)
-                          onChanged: function(value) { root.updateApplication(index, "workspace", Number(value)) }
+                      RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Style.space(10)
+
+                        FieldColumn {
+                          Layout.preferredWidth: 150
+                          label: "Workspace"
+                          content: Ui.Dropdown {
+                            width: parent.width
+                            showLabel: false
+                            options: root.workspaces.map(function(item) { return String(item.id) })
+                            value: String(modelData.workspace)
+                            onChanged: function(value) { root.updateApplication(index, "workspace", Number(value)) }
+                          }
                         }
-                      }
-                      FieldColumn {
-                        Layout.fillWidth: applicationGrid.compact
-                        Layout.minimumWidth: applicationGrid.compact ? 0 : 90
-                        Layout.preferredWidth: 100
-                        label: "Delay"
-                        content: Ui.NumberField {
-                          width: parent.width
-                          label: ""
-                          from: 0
-                          to: 300
-                          value: Number(modelData.delay)
-                          enabled: modelData.autostartSource !== "external"
-                          opacity: enabled ? 1 : 0.65
-                          fieldWidth: parent.width
-                          onModified: function(value) { root.updateApplication(index, "delay", value) }
-                        }
-                      }
-                      ColumnLayout {
-                        Layout.fillWidth: applicationGrid.compact
-                        Layout.minimumWidth: applicationGrid.compact ? 0 : 135
-                        Layout.preferredWidth: 145
-                        Layout.columnSpan: applicationGrid.compact ? 2 : 1
-                        spacing: Style.space(4)
-                        Text {
-                          text: "Launch"
-                          color: root.muted
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption
-                          font.bold: true
-                        }
-                        RowLayout {
-                          Ui.Button {
-                            text: modelData.autostartSource === "external" ? "External" : (modelData.enabled ? "On" : "Off")
-                            selected: modelData.enabled
-                            bordered: true
-                            focusable: true
+
+                        FieldColumn {
+                          Layout.preferredWidth: 120
+                          label: "Delay (seconds)"
+                          content: Ui.NumberField {
+                            width: parent.width
+                            label: ""
+                            from: 0
+                            to: 300
+                            value: Number(modelData.delay)
                             enabled: modelData.autostartSource !== "external"
                             opacity: enabled ? 1 : 0.65
-                            onClicked: root.updateApplication(index, "enabled", !modelData.enabled)
+                            fieldWidth: parent.width
+                            onModified: function(value) { root.updateApplication(index, "delay", value) }
                           }
-                          Ui.Button {
-                            iconText: "󰆴"
-                            tooltipText: "Remove " + modelData.name
-                            bordered: true
-                            focusable: true
-                            onClicked: root.removeApplication(index)
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        ColumnLayout {
+                          Layout.preferredWidth: 150
+                          spacing: Style.space(4)
+                          Text {
+                            text: "Launch"
+                            color: root.muted
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                          }
+                          RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
+                            Ui.Button {
+                              Layout.fillWidth: true
+                              text: modelData.autostartSource === "external" ? "External" : (modelData.enabled ? "On" : "Off")
+                              selected: modelData.enabled
+                              bordered: true
+                              focusable: true
+                              enabled: modelData.autostartSource !== "external"
+                              opacity: enabled ? 1 : 0.65
+                              onClicked: root.updateApplication(index, "enabled", !modelData.enabled)
+                            }
+                            Ui.Button {
+                              iconText: "󰆴"
+                              tooltipText: "Remove " + modelData.name
+                              bordered: true
+                              focusable: true
+                              onClicked: root.removeApplication(index)
+                            }
                           }
                         }
                       }
