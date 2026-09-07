@@ -739,6 +739,8 @@ Item {
     Loader {
       Layout.fillWidth: true
       Layout.minimumWidth: 0
+      Layout.minimumHeight: Style.spacing.controlHeight
+      Layout.preferredHeight: Style.spacing.controlHeight
       sourceComponent: parent.content
     }
   }
