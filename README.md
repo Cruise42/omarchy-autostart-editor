@@ -7,6 +7,10 @@ Hyprland Lua or XDG autostart files.
 > This project is an early development version. Review generated changes and
 > keep backups before using it on an important session.
 
+<img src="docs/panel.jpg" alt="The Autostart Editor panel: workspace names and
+monitor assignments above, login applications with command, workspace, delay and
+launch state below" width="620">
+
 ## Design
 
 - `AutostartEditor.qml` provides an adaptive, theme-aware Omarchy panel.
@@ -47,8 +51,9 @@ autostart entries are preserved.
 On first run, the plugin can read a configuration created by an earlier
 Autostart Editor. Imported entries are editable like any others, and nothing is
 written until Apply. That Apply replaces the legacy managed block instead of
-creating duplicate workspace or window rules. Legacy editor-owned autostart entries are migrated to the new
-namespace; application-owned entries remain external and read-only.
+creating duplicate workspace or window rules. Legacy editor-owned autostart
+entries are migrated to the new namespace; application-owned entries remain
+external and read-only.
 
 ## Requirements
 
