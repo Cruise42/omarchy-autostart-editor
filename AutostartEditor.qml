@@ -158,7 +158,6 @@ Item {
     loading = true
     statusError = false
     statusText = "Discovering monitors and applications…"
-    inspectProcess.output = ""
     inspectProcess.command = [backendPath, "inspect"]
     inspectProcess.running = true
   }
@@ -193,7 +192,6 @@ Item {
     applying = true
     statusError = false
     statusText = "Applying changes…"
-    applyProcess.output = ""
     applyProcess.pendingPayload = JSON.stringify({
       revision: revision,
       legacyImport: legacyImport,
@@ -223,55 +221,41 @@ Item {
 
   Process {
     id: inspectProcess
-    property string output: ""
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        inspectProcess.output = text
-        root.loading = false
-        root.acceptInspection(text)
-      }
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (String(text).trim()) root.statusText = String(text).trim()
-    }
+    stdout: StdioCollector { id: inspectStdout; waitForEnd: true }
+    stderr: StdioCollector { id: inspectStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root.loading = false
-      if (!String(inspectProcess.output).trim()) {
+      var output = String(inspectStdout.text || "").trim()
+      var error = String(inspectStderr.text || "").trim()
+      if (exitCode !== 0 || !output) {
         root.statusError = true
-        root.statusText = root.statusText || "Inspection backend returned no data"
+        root.statusText = error || "Inspection backend returned no data"
+        return
       }
+      root.acceptInspection(output)
     }
   }
 
   Process {
     id: applyProcess
     property string pendingPayload: ""
-    property string output: ""
     stdinEnabled: true
     onStarted: {
       write(pendingPayload)
       pendingPayload = ""
     }
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        applyProcess.output = text
-        root.applying = false
-        root.acceptApply(text)
-      }
-    }
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (String(text).trim()) root.statusText = String(text).trim()
-    }
+    stdout: StdioCollector { id: applyStdout; waitForEnd: true }
+    stderr: StdioCollector { id: applyStderr; waitForEnd: true }
     onExited: function(exitCode) {
       root.applying = false
-      if (!String(applyProcess.output).trim()) {
+      var output = String(applyStdout.text || "").trim()
+      var error = String(applyStderr.text || "").trim()
+      if (exitCode !== 0 || !output) {
         root.statusError = true
-        root.statusText = root.statusText || "Apply backend returned no data"
+        root.statusText = error || "Apply backend returned no data"
+        return
       }
+      root.acceptApply(output)
     }
   }
 
