@@ -52,6 +52,17 @@ class DesktopDiscoveryTests(unittest.TestCase):
         self.assertEqual(parsed["windowClass"], "example-window")
         self.assertEqual(parsed["desktopId"], "example")
 
+    def test_desktop_entry_infers_terminal_app_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "monitor.desktop"
+            path.write_text(
+                "[Desktop Entry]\nType=Application\nName=Monitor\n"
+                "Exec=terminal --app-id=monitor-window -e monitor\n",
+                encoding="utf-8",
+            )
+            parsed = backend.parse_desktop_entry(path)
+        self.assertEqual(parsed["windowClass"], "monitor-window")
+
     def test_hidden_entries_are_ignored(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "hidden.desktop"
@@ -108,6 +119,75 @@ class StateTests(unittest.TestCase):
         self.assertIn(backend.BEGIN_MARKER, rendered)
         self.assertIn('monitor = "Panel-42"', rendered)
         self.assertIn('o.window("editor-window"', rendered)
+
+    def test_legacy_block_is_discovered_without_a_hard_coded_marker_name(self):
+        content = """before()
+-- >>> OLD-AUTOSTART-EDITOR BEGIN >>>
+-- Managed by AutostartEditor. Do not edit by hand.
+hl.workspace_rule({ workspace = "1", monitor = "Panel-42" })
+-- <<< OLD-AUTOSTART-EDITOR END <<<
+after()
+"""
+        block = backend.legacy_managed_block(content)
+        self.assertIn("Panel-42", block)
+        self.assertNotIn("before()", block)
+
+    def test_legacy_rules_preserve_class_and_title_match_types(self):
+        block = """-- >>> OLD-AUTOSTART-EDITOR BEGIN >>>
+-- Managed by AutostartEditor. Do not edit by hand.
+hl.workspace_rule({ workspace = "1", monitor = "Panel-42", default = true, default_name = "Main" })
+o.window("editor-window", { workspace = "1 silent" })
+o.window({ title = "example.test_/app" }, { workspace = "1 silent", float = false })
+-- <<< OLD-AUTOSTART-EDITOR END <<<"""
+        workspaces, applications = backend.legacy_rules(block)
+        self.assertEqual(workspaces[0]["name"], "Main")
+        self.assertEqual(applications[0]["matchType"], "class")
+        self.assertEqual(applications[1]["matchType"], "title")
+
+    def test_title_rule_matches_legacy_autostart_command_without_private_mapping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "web-tool.desktop").write_text(
+                "[Desktop Entry]\nName=Web Tool\n"
+                "Exec=launcher https://example.test/app\n"
+                "X-GNOME-Autostart-enabled=true\n"
+                "# managed-by: autostart-editor\n",
+                encoding="utf-8",
+            )
+            block = """-- >>> OLD-AUTOSTART-EDITOR BEGIN >>>
+-- Managed by AutostartEditor. Do not edit by hand.
+hl.workspace_rule({ workspace = "1", monitor = "Panel-42" })
+o.window({ title = "example.test_/app" }, { workspace = "1 silent" })
+-- <<< OLD-AUTOSTART-EDITOR END <<<"""
+            with mock.patch.object(backend, "AUTOSTART_DIR", directory):
+                imported = backend.import_legacy_state(block, [])
+        application = imported["applications"][0]
+        self.assertEqual(application["name"], "Web Tool")
+        self.assertEqual(application["autostartSource"], "legacy")
+        self.assertEqual(application["matchType"], "title")
+
+    def test_title_rule_matches_url_with_a_port(self):
+        rule = {"matchType": "title", "windowClass": "example.test_/"}
+        entry = {
+            "path": Path("web.desktop"), "desktopId": "web", "name": "Web",
+            "command": "launcher http://example.test:8080", "windowClass": "",
+            "enabled": True, "source": "legacy",
+        }
+        self.assertIs(backend.match_autostart_entry(rule, [entry], set()), entry)
+
+    def test_legacy_migration_replaces_instead_of_duplicating_block(self):
+        content = """keep()
+-- >>> OLD-AUTOSTART-EDITOR BEGIN >>>
+-- Managed by AutostartEditor. Do not edit by hand.
+old()
+-- <<< OLD-AUTOSTART-EDITOR END <<<
+"""
+        replacement = backend.BEGIN_MARKER + "\nnew()\n" + backend.END_MARKER
+        migrated = backend.replace_managed_block(content, replacement, migrate_legacy=True)
+        self.assertIn("keep()", migrated)
+        self.assertIn("new()", migrated)
+        self.assertNotIn("old()", migrated)
+        self.assertEqual(migrated.count(" BEGIN >>>"), 1)
 
 
 class ValidationTests(unittest.TestCase):

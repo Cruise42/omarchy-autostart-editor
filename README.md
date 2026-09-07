@@ -34,6 +34,12 @@ It refuses to apply if `hyprland.lua` or its state changed after the panel was
 loaded. Files are replaced atomically, and unrelated Hyprland configuration and
 autostart entries are preserved.
 
+On first run, the plugin can read a configuration created by an earlier
+Autostart Editor. The import is a preview and performs no writes. A later Apply
+replaces the legacy managed block instead of creating duplicate workspace or
+window rules. Legacy editor-owned autostart entries are migrated to the new
+namespace; application-owned entries remain external and read-only.
+
 ## Requirements
 
 - Omarchy with the Quattro Shell plugin system

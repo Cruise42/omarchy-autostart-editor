@@ -32,7 +32,15 @@ BEGIN_MARKER = f"-- >>> {PLUGIN_ID} BEGIN >>>"
 END_MARKER = f"-- <<< {PLUGIN_ID} END <<<"
 DESKTOP_MARKER = f"X-{PLUGIN_ID}-Managed=true"
 DESKTOP_PREFIX = "cruise42-autostart-editor-"
+LEGACY_DESKTOP_MARKER = "# managed-by: autostart-editor"
+LEGACY_CLASS_KEY = "X-AutostartEditor-Class"
 INTERNAL_CONNECTOR_PREFIXES = ("edp-", "lvds-", "dsi-")
+
+MANAGED_BLOCK_PATTERN = re.compile(
+    r"^-- >>> (?P<manager>[^\n]+) BEGIN >>>\s*$.*?"
+    r"^-- <<< (?P=manager) END <<<\s*$",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 def xdg_dir(variable: str, default: Path) -> Path:
@@ -154,7 +162,10 @@ def parse_desktop_entry(path: Path) -> dict[str, str] | None:
     if not name or not command:
         return None
     desktop_id = path.stem
-    window_class = values.get("StartupWMClass", "").strip() or desktop_id
+    window_class = values.get("StartupWMClass", "").strip()
+    if not window_class:
+        app_id = re.search(r"(?:^|\s)--(?:app-id|class)(?:=|\s+)([^\s]+)", command)
+        window_class = app_id.group(1).strip('"\'') if app_id else desktop_id
     return {
         "desktopId": desktop_id,
         "name": name,
@@ -174,6 +185,203 @@ def discover_applications() -> list[dict[str, str]]:
             if item:
                 applications.setdefault(item["desktopId"], item)
     return sorted(applications.values(), key=lambda item: item["name"].casefold())
+
+
+def parse_autostart_entries() -> list[dict[str, Any]]:
+    """Read XDG autostart entries, including legacy ownership metadata."""
+    entries = []
+    if not AUTOSTART_DIR.is_dir():
+        return entries
+    for path in sorted(AUTOSTART_DIR.glob("*.desktop")):
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        values: dict[str, str] = {}
+        for line in content.splitlines():
+            if "=" not in line or line.startswith("#"):
+                continue
+            key, value = line.split("=", 1)
+            if key in {"Name", "Exec", "Hidden", "X-GNOME-Autostart-enabled", LEGACY_CLASS_KEY}:
+                values[key] = value.strip()
+        command = values.get("Exec", "")
+        name = values.get("Name", path.stem)
+        enabled = (
+            values.get("Hidden", "false").lower() != "true"
+            and values.get("X-GNOME-Autostart-enabled", "true").lower() != "false"
+        )
+        source = "plugin" if DESKTOP_MARKER in content else (
+            "legacy" if LEGACY_DESKTOP_MARKER in content else "external"
+        )
+        entries.append(
+            {
+                "path": path,
+                "desktopId": path.stem,
+                "name": name,
+                "command": command,
+                "windowClass": values.get(LEGACY_CLASS_KEY, ""),
+                "enabled": enabled,
+                "source": source,
+            }
+        )
+    return entries
+
+
+def legacy_managed_block(content: str) -> str:
+    """Find an older editor block by its ownership comment, not its private ID."""
+    for match in MANAGED_BLOCK_PATTERN.finditer(content):
+        block = match.group(0)
+        if match.group("manager") == PLUGIN_ID:
+            continue
+        if "Managed by AutostartEditor" in block:
+            return block
+    return ""
+
+
+def decode_lua_string(value: str) -> str:
+    try:
+        return json.loads(f'"{value}"')
+    except ValueError:
+        return value.replace('\\"', '"').replace("\\\\", "\\")
+
+
+def extract_delay(command: str) -> tuple[str, int]:
+    match = re.fullmatch(r"sh -c 'sleep (\d+); exec (.*)'", command)
+    if not match:
+        return command, 0
+    return match.group(2), int(match.group(1))
+
+
+def legacy_rules(block: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Parse workspace and window rules written by the former GTK editor."""
+    workspaces = []
+    applications = []
+    for line in block.splitlines():
+        workspace_match = re.match(r"\s*hl\.workspace_rule\(\{(.*)\}\)\s*$", line)
+        if workspace_match:
+            body = workspace_match.group(1)
+            workspace_id = re.search(r'workspace\s*=\s*"?(\d+)"?', body)
+            monitor = re.search(r'monitor\s*=\s*"((?:\\.|[^"])*)"', body)
+            name = re.search(r'default_name\s*=\s*"((?:\\.|[^"])*)"', body)
+            if workspace_id and monitor:
+                workspaces.append(
+                    {
+                        "id": int(workspace_id.group(1)),
+                        "name": decode_lua_string(name.group(1)) if name else "",
+                        "monitor": decode_lua_string(monitor.group(1)),
+                        "default": bool(re.search(r"\bdefault\s*=\s*true\b", body)),
+                    }
+                )
+            continue
+
+        title_match = re.match(
+            r'\s*o\.window\(\{\s*title\s*=\s*"((?:\\.|[^"])*)"\s*\},\s*\{(.*)\}\)\s*$',
+            line,
+        )
+        class_match = re.match(
+            r'\s*o\.window\(\s*"((?:\\.|[^"])*)"\s*,\s*\{(.*)\}\)\s*$',
+            line,
+        )
+        matched = title_match or class_match
+        if not matched:
+            continue
+        workspace = re.search(r'workspace\s*=\s*"?(\d+)(?:\s+silent)?"?', matched.group(2))
+        if workspace:
+            rule_options: dict[str, Any] = {}
+            float_option = re.search(r"\bfloat\s*=\s*(true|false)\b", matched.group(2))
+            tag_option = re.search(r'\btag\s*=\s*"((?:\\.|[^"])*)"', matched.group(2))
+            if float_option:
+                rule_options["float"] = float_option.group(1) == "true"
+            if tag_option:
+                rule_options["tag"] = decode_lua_string(tag_option.group(1))
+            applications.append(
+                {
+                    "matchType": "title" if title_match else "class",
+                    "windowClass": decode_lua_string(matched.group(1)),
+                    "workspace": int(workspace.group(1)),
+                    "ruleOptions": rule_options,
+                }
+            )
+    return workspaces, applications
+
+
+def match_autostart_entry(rule: dict[str, Any], entries: list[dict[str, Any]], used: set[Path]) -> dict[str, Any] | None:
+    value = rule["windowClass"]
+    value_slug = slug(value)
+    candidates = [entry for entry in entries if entry["path"] not in used]
+
+    for entry in candidates:
+        if entry["windowClass"] == value:
+            return entry
+    for entry in candidates:
+        if slug(entry["desktopId"].removeprefix("autostart-editor-")) == value_slug:
+            return entry
+        if slug(entry["name"]) == value_slug:
+            return entry
+    if rule["matchType"] == "title":
+        needles = unique_strings(
+            [value.replace("_", "").casefold(), value.split("_", 1)[0].casefold()]
+        )
+        for entry in candidates:
+            command = entry["command"].casefold()
+            if any(len(needle) >= 4 and needle in command for needle in needles):
+                return entry
+    return None
+
+
+def import_legacy_state(block: str, installed: list[dict[str, str]]) -> dict[str, Any]:
+    workspaces, rules = legacy_rules(block)
+    entries = parse_autostart_entries()
+    installed_by_class = {item["windowClass"]: item for item in installed}
+    used: set[Path] = set()
+    applications = []
+    for rule in rules:
+        entry = match_autostart_entry(rule, entries, used)
+        discovered = installed_by_class.get(rule["windowClass"])
+        if entry:
+            used.add(entry["path"])
+            command, delay = extract_delay(entry["command"])
+            name = entry["name"]
+            desktop_id = entry["desktopId"].removeprefix("autostart-editor-")
+            enabled = entry["enabled"]
+            source = entry["source"]
+        elif discovered:
+            command, delay = extract_delay(discovered["command"])
+            name = discovered["name"]
+            desktop_id = discovered["desktopId"]
+            enabled = False
+            source = "plugin"
+        else:
+            command, delay = "", 0
+            name = rule["windowClass"]
+            desktop_id = ""
+            enabled = False
+            source = "plugin"
+        applications.append(
+            {
+                "desktopId": desktop_id,
+                "name": name,
+                "windowClass": rule["windowClass"],
+                "matchType": rule["matchType"],
+                "ruleOptions": rule.get("ruleOptions", {}),
+                "command": command,
+                "workspace": rule["workspace"],
+                "delay": delay,
+                "enabled": enabled,
+                "autostartSource": source,
+            }
+        )
+    applications.sort(key=lambda item: (item["workspace"], item["name"].casefold()))
+    return {
+        "version": CONFIG_VERSION,
+        "legacyImport": True,
+        "refocusDefaults": "hl.timer(" in block,
+        "focusDelayMs": int(timeout.group(1)) if (
+            timeout := re.search(r"timeout\s*=\s*(\d+)", block)
+        ) else 8000,
+        "workspaces": workspaces,
+        "applications": applications,
+    }
 
 
 def load_state() -> dict[str, Any] | None:
@@ -225,6 +433,9 @@ def normalize_state(data: dict[str, Any] | None, monitors: list[dict[str, Any]])
     if data is None:
         return {
             "version": CONFIG_VERSION,
+            "legacyImport": False,
+            "refocusDefaults": True,
+            "focusDelayMs": 8000,
             "workspaces": default_workspaces(fallback),
             "applications": [],
         }, warnings
@@ -261,27 +472,53 @@ def normalize_state(data: dict[str, Any] | None, monitors: list[dict[str, Any]])
                 "desktopId": str(raw.get("desktopId", "")),
                 "name": str(raw.get("name", "")),
                 "windowClass": str(raw.get("windowClass", "")),
+                "matchType": "title" if raw.get("matchType") == "title" else "class",
+                "ruleOptions": raw.get("ruleOptions", {}) if isinstance(raw.get("ruleOptions", {}), dict) else {},
                 "command": str(raw.get("command", "")),
                 "workspace": int(raw.get("workspace", 1)),
                 "delay": int(raw.get("delay", 0)),
                 "enabled": bool(raw.get("enabled", True)),
+                "autostartSource": str(raw.get("autostartSource", "plugin")),
             }
         )
-    return {"version": CONFIG_VERSION, "workspaces": workspaces, "applications": applications}, warnings
+    return {
+        "version": CONFIG_VERSION,
+        "legacyImport": bool(data.get("legacyImport", False)),
+        "refocusDefaults": bool(data.get("refocusDefaults", True)),
+        "focusDelayMs": int(data.get("focusDelayMs", 8000) or 8000),
+        "workspaces": workspaces,
+        "applications": applications,
+    }, warnings
 
 
 def inspect() -> dict[str, Any]:
     monitors = discover_monitors()
-    state, warnings = normalize_state(load_state(), monitors)
+    installed = discover_applications()
+    data = load_state()
+    imported = False
+    if data is None and HYPRLAND_FILE.is_file():
+        try:
+            block = legacy_managed_block(HYPRLAND_FILE.read_text(encoding="utf-8"))
+        except OSError as error:
+            raise BackendError(f"Could not read {HYPRLAND_FILE}: {error}") from error
+        if block:
+            data = import_legacy_state(block, installed)
+            imported = True
+    state, warnings = normalize_state(data, monitors)
+    if imported:
+        warnings.insert(0, "Imported the existing Autostart Editor configuration as a read-only preview")
     return {
         "ok": True,
         "pluginId": PLUGIN_ID,
         "revision": revision(),
         "monitors": monitors,
         "fallbackMonitor": fallback_monitor(monitors),
+        "legacyImport": state["legacyImport"],
+        "refocusDefaults": state["refocusDefaults"],
+        "focusDelayMs": state["focusDelayMs"],
         "workspaces": state["workspaces"],
         "applications": state["applications"],
-        "installedApplications": discover_applications(),
+        "installedApplications": installed,
         "warnings": warnings,
         "paths": {
             "state": str(STATE_FILE),
@@ -355,7 +592,23 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if window_class in seen_classes:
             raise BackendError(f"Window class {window_class} is assigned more than once")
         seen_classes.add(window_class)
-        command = safe_text(raw.get("command", ""), f"{name} command")
+        enabled = bool(raw.get("enabled", True))
+        command = safe_text(raw.get("command", ""), f"{name} command", allow_empty=not enabled)
+        match_type = "title" if raw.get("matchType") == "title" else "class"
+        raw_options = raw.get("ruleOptions", {})
+        rule_options: dict[str, Any] = {}
+        if isinstance(raw_options, dict):
+            if isinstance(raw_options.get("float"), bool):
+                rule_options["float"] = raw_options["float"]
+            if raw_options.get("tag") is not None:
+                rule_options["tag"] = safe_text(raw_options["tag"], f"{name} rule tag")
+        source = str(raw.get("autostartSource", "plugin"))
+        if source not in {"plugin", "legacy", "external"}:
+            source = "plugin"
+        if source == "external" and not enabled:
+            raise BackendError(
+                f"{name} is started by an application-managed autostart entry and cannot be disabled here"
+            )
         try:
             workspace = int(raw.get("workspace"))
             delay = int(raw.get("delay", 0))
@@ -370,13 +623,29 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "desktopId": safe_text(raw.get("desktopId", ""), f"{name} desktop ID", allow_empty=True),
                 "name": name,
                 "windowClass": window_class,
+                "matchType": match_type,
+                "ruleOptions": rule_options,
                 "command": command,
                 "workspace": workspace,
                 "delay": delay,
-                "enabled": bool(raw.get("enabled", True)),
+                "enabled": enabled,
+                "autostartSource": source,
             }
         )
-    return {"version": CONFIG_VERSION, "workspaces": workspaces, "applications": applications}
+    try:
+        focus_delay = int(payload.get("focusDelayMs", 8000))
+    except (TypeError, ValueError) as error:
+        raise BackendError("Default-workspace focus delay must be numeric") from error
+    if focus_delay < 0 or focus_delay > 60000:
+        raise BackendError("Default-workspace focus delay must be between 0 and 60000 milliseconds")
+    return {
+        "version": CONFIG_VERSION,
+        "legacyImport": bool(payload.get("legacyImport", False)),
+        "refocusDefaults": bool(payload.get("refocusDefaults", True)),
+        "focusDelayMs": focus_delay,
+        "workspaces": workspaces,
+        "applications": applications,
+    }
 
 
 def lua_string(value: str) -> str:
@@ -398,15 +667,39 @@ def render_hyprland(state: dict[str, Any]) -> str:
         lines.append(f"hl.workspace_rule({{ {', '.join(parts)} }})")
     for application in state["applications"]:
         workspace = lua_string(f"{application['workspace']} silent")
-        lines.append(f"o.window({lua_string(application['windowClass'])}, {{ workspace = {workspace} }})")
+        if application.get("matchType") == "title":
+            matcher = f"{{ title = {lua_string(application['windowClass'])} }}"
+        else:
+            matcher = lua_string(application["windowClass"])
+        parts = [f"workspace = {workspace}"]
+        options = application.get("ruleOptions", {})
+        if isinstance(options.get("float"), bool):
+            parts.append(f"float = {'true' if options['float'] else 'false'}")
+        if options.get("tag"):
+            parts.append(f"tag = {lua_string(options['tag'])}")
+        lines.append(f"o.window({matcher}, {{ {', '.join(parts)} }})")
+    defaults = [workspace for workspace in state["workspaces"] if workspace["default"]]
+    if state.get("refocusDefaults") and defaults:
+        lines.append("-- Re-focus each monitor's default workspace after login applications settle.")
+        lines.append("hl.timer(function()")
+        for workspace in defaults:
+            lines.append(f"  hl.dispatch(hl.dsp.focus({{ monitor = {lua_string(workspace['monitor'])} }}))")
+            lines.append(f"  hl.dispatch(hl.dsp.focus({{ workspace = {lua_string(str(workspace['id']))} }}))")
+        lines.append(
+            f'end, {{ timeout = {int(state.get("focusDelayMs", 8000))}, type = "oneshot" }})'
+        )
     lines.append(END_MARKER)
     return "\n".join(lines)
 
 
-def replace_managed_block(content: str, block: str) -> str:
+def replace_managed_block(content: str, block: str, migrate_legacy: bool = False) -> str:
     pattern = re.compile(re.escape(BEGIN_MARKER) + r".*?" + re.escape(END_MARKER), re.DOTALL)
     if pattern.search(content):
         return pattern.sub(lambda _match: block, content)
+    if migrate_legacy:
+        legacy = legacy_managed_block(content)
+        if legacy:
+            return content.replace(legacy, block, 1)
     prefix = content.rstrip()
     return f"{prefix}\n\n{block}\n" if prefix else f"{block}\n"
 
@@ -492,17 +785,40 @@ def apply(payload: dict[str, Any]) -> dict[str, Any]:
 
     rotate_backup(HYPRLAND_FILE)
     rotate_backup(STATE_FILE)
-    rendered = replace_managed_block(current_hyprland, render_hyprland(state))
+    rendered = replace_managed_block(
+        current_hyprland, render_hyprland(state), migrate_legacy=state["legacyImport"]
+    )
     atomic_write(HYPRLAND_FILE, rendered)
-    atomic_write(STATE_FILE, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
 
     keep: set[Path] = set()
+    migrated_legacy_paths: set[Path] = set()
     for application in state["applications"]:
+        source = application.get("autostartSource", "plugin")
+        if source == "legacy" and application.get("desktopId"):
+            migrated_legacy_paths.add(AUTOSTART_DIR / f"{application['desktopId']}.desktop")
+        if source == "external":
+            continue
         path = managed_desktop_path(application)
         if application["enabled"]:
             atomic_write(path, render_desktop(application))
             keep.add(path)
     remove_orphaned_desktops(keep)
+
+    for path in migrated_legacy_paths:
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if LEGACY_DESKTOP_MARKER in content and DESKTOP_MARKER not in content:
+            path.unlink()
+
+    state["legacyImport"] = False
+    for application in state["applications"]:
+        if application.get("autostartSource") == "legacy":
+            application["autostartSource"] = "plugin"
+    atomic_write(STATE_FILE, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
 
     reload_result = run(["hyprctl", "reload"])
     error_result = run(["hyprctl", "configerrors"])

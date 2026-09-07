@@ -18,6 +18,9 @@ Item {
   property string statusText: ""
   property bool statusError: false
   property string revision: ""
+  property bool legacyImport: false
+  property bool refocusDefaults: true
+  property int focusDelayMs: 8000
   property var monitors: []
   property var monitorNames: []
   property var workspaces: []
@@ -119,10 +122,13 @@ Item {
       desktopId: selected.desktopId,
       name: selected.name,
       windowClass: selected.windowClass,
+      matchType: "class",
+      ruleOptions: {},
       command: selected.command,
       workspace: workspace,
       delay: 0,
-      enabled: true
+      enabled: true,
+      autostartSource: "plugin"
     })
     applications = copy
     markDirty("Added " + selected.name)
@@ -162,6 +168,9 @@ Item {
       var data = JSON.parse(String(raw || ""))
       if (!data.ok) throw new Error(data.error || "Inspection failed")
       revision = String(data.revision || "")
+      legacyImport = data.legacyImport === true
+      refocusDefaults = data.refocusDefaults !== false
+      focusDelayMs = Number(data.focusDelayMs || 8000)
       monitors = data.monitors || []
       monitorNames = monitors.map(function(item) { return String(item.name) })
       workspaces = data.workspaces || []
@@ -187,6 +196,9 @@ Item {
     applyProcess.output = ""
     applyProcess.pendingPayload = JSON.stringify({
       revision: revision,
+      legacyImport: legacyImport,
+      refocusDefaults: refocusDefaults,
+      focusDelayMs: focusDelayMs,
       workspaces: workspaces,
       applications: applications
     }) + "\n"
@@ -200,6 +212,7 @@ Item {
       if (!data.ok) throw new Error(data.error || "Apply failed")
       revision = String(data.revision || revision)
       dirty = false
+      legacyImport = false
       statusError = false
       statusText = data.message || "Changes applied"
     } catch (error) {
@@ -524,7 +537,7 @@ Item {
                       }
                       FieldColumn {
                         Layout.fillWidth: true
-                        label: "App / window class"
+                        label: modelData.matchType === "title" ? "App / initial title" : "App / window class"
                         content: Text {
                           width: parent.width
                           height: Style.spacing.controlHeight
@@ -543,6 +556,8 @@ Item {
                         content: Ui.TextField {
                           width: parent.width
                           text: modelData.command
+                          enabled: modelData.autostartSource !== "external"
+                          opacity: enabled ? 1 : 0.65
                           onEditingFinished: root.updateApplication(index, "command", text.trim())
                         }
                       }
@@ -566,6 +581,8 @@ Item {
                           from: 0
                           to: 300
                           value: Number(modelData.delay)
+                          enabled: modelData.autostartSource !== "external"
+                          opacity: enabled ? 1 : 0.65
                           fieldWidth: parent.width
                           onModified: function(value) { root.updateApplication(index, "delay", value) }
                         }
@@ -582,10 +599,12 @@ Item {
                         }
                         RowLayout {
                           Ui.Button {
-                            text: modelData.enabled ? "On" : "Off"
+                            text: modelData.autostartSource === "external" ? "External" : (modelData.enabled ? "On" : "Off")
                             selected: modelData.enabled
                             bordered: true
                             focusable: true
+                            enabled: modelData.autostartSource !== "external"
+                            opacity: enabled ? 1 : 0.65
                             onClicked: root.updateApplication(index, "enabled", !modelData.enabled)
                           }
                           Ui.Button {
