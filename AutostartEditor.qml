@@ -512,22 +512,36 @@ Item {
                         Layout.fillWidth: true
                         spacing: Style.space(10)
 
-                        FieldColumn {
+                        ColumnLayout {
                           Layout.fillWidth: true
-                          label: "Name"
-                          content: Ui.TextField {
-                            width: parent.width
+                          spacing: Style.space(4)
+                          Text {
+                            text: "Name"
+                            color: root.muted
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                          }
+                          Ui.TextField {
+                            Layout.fillWidth: true
                             text: modelData.name
                             onEditingFinished: root.updateApplication(index, "name", text.trim())
                           }
                         }
 
-                        FieldColumn {
+                        ColumnLayout {
                           Layout.fillWidth: true
-                          label: modelData.matchType === "title" ? "App / initial title" : "App / window class"
-                          content: Text {
-                            width: parent.width
-                            height: Style.spacing.controlHeight
+                          spacing: Style.space(4)
+                          Text {
+                            text: modelData.matchType === "title" ? "App / initial title" : "App / window class"
+                            color: root.muted
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                          }
+                          Text {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Style.spacing.controlHeight
                             text: modelData.windowClass
                             color: root.muted
                             font.family: root.fontFamily
@@ -538,11 +552,18 @@ Item {
                         }
                       }
 
-                      FieldColumn {
+                      ColumnLayout {
                         Layout.fillWidth: true
-                        label: "Command"
-                        content: Ui.TextField {
-                          width: parent.width
+                        spacing: Style.space(4)
+                        Text {
+                          text: "Command"
+                          color: root.muted
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          font.bold: true
+                        }
+                        Ui.TextField {
+                          Layout.fillWidth: true
                           text: modelData.command
                           enabled: modelData.autostartSource !== "external"
                           opacity: enabled ? 1 : 0.65
@@ -553,11 +574,18 @@ Item {
                         Layout.fillWidth: true
                         spacing: Style.space(10)
 
-                        FieldColumn {
+                        ColumnLayout {
                           Layout.preferredWidth: 150
-                          label: "Workspace"
-                          content: Ui.Dropdown {
-                            width: parent.width
+                          spacing: Style.space(4)
+                          Text {
+                            text: "Workspace"
+                            color: root.muted
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                          }
+                          Ui.Dropdown {
+                            Layout.fillWidth: true
                             showLabel: false
                             options: root.workspaces.map(function(item) { return String(item.id) })
                             value: String(modelData.workspace)
@@ -565,18 +593,25 @@ Item {
                           }
                         }
 
-                        FieldColumn {
+                        ColumnLayout {
                           Layout.preferredWidth: 120
-                          label: "Delay (seconds)"
-                          content: Ui.NumberField {
-                            width: parent.width
+                          spacing: Style.space(4)
+                          Text {
+                            text: "Delay (seconds)"
+                            color: root.muted
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                          }
+                          Ui.NumberField {
+                            Layout.fillWidth: true
                             label: ""
                             from: 0
                             to: 300
                             value: Number(modelData.delay)
                             enabled: modelData.autostartSource !== "external"
                             opacity: enabled ? 1 : 0.65
-                            fieldWidth: parent.width
+                            fieldWidth: width
                             onModified: function(value) { root.updateApplication(index, "delay", value) }
                           }
                         }
@@ -727,23 +762,4 @@ Item {
     }
   }
 
-  component FieldColumn: ColumnLayout {
-    property string label: ""
-    property Component content
-    spacing: Style.space(4)
-    Text {
-      text: parent.label
-      color: root.muted
-      font.family: root.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: true
-    }
-    Loader {
-      Layout.fillWidth: true
-      Layout.minimumWidth: 0
-      Layout.minimumHeight: Style.spacing.controlHeight
-      Layout.preferredHeight: Style.spacing.controlHeight
-      sourceComponent: parent.content
-    }
-  }
 }
