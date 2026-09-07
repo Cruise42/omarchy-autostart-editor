@@ -23,9 +23,14 @@ Item {
   property int focusDelayMs: 8000
   property var monitors: []
   property var monitorNames: []
-  property var workspaces: []
-  property var applications: []
   property var installedApplications: []
+  // Workspace IDs as strings, for the per-application workspace dropdown.
+  property var workspaceIds: []
+
+  // Row state lives in ListModels so a single field edit updates one row
+  // through setProperty instead of replacing the model and resetting the view.
+  ListModel { id: workspaceModel; dynamicRoles: true }
+  ListModel { id: applicationModel; dynamicRoles: true }
 
   readonly property string pluginId: "cruise42.autostart-editor"
   // The host prefers a panel's own `opened` flag over its bookkeeping when
@@ -74,38 +79,82 @@ Item {
     else window.visible = false
   }
 
-  function cloneObject(value) {
-    return JSON.parse(JSON.stringify(value))
-  }
-
   function markDirty(message) {
     dirty = true
     statusError = false
     statusText = message || "Unsaved changes"
   }
 
+  function replaceRows(model, rows) {
+    model.clear()
+    for (var i = 0; i < rows.length; i++) model.append(rows[i])
+  }
+
+  function workspaceList() {
+    var out = []
+    for (var i = 0; i < workspaceModel.count; i++) {
+      var row = workspaceModel.get(i)
+      out.push({
+        id: Number(row.id),
+        name: String(row.name),
+        monitor: String(row.monitor),
+        default: row.default === true
+      })
+    }
+    return out
+  }
+
+  function applicationList() {
+    var out = []
+    for (var i = 0; i < applicationModel.count; i++) {
+      var row = applicationModel.get(i)
+      out.push({
+        desktopId: String(row.desktopId),
+        legacyPath: String(row.legacyPath || ""),
+        name: String(row.name),
+        windowClass: String(row.windowClass),
+        matchType: String(row.matchType),
+        ruleOptions: row.ruleOptions || {},
+        command: String(row.command),
+        workspace: Number(row.workspace),
+        delay: Number(row.delay),
+        enabled: row.enabled === true,
+        autostartSource: String(row.autostartSource)
+      })
+    }
+    return out
+  }
+
+  function refreshWorkspaceIds() {
+    var ids = []
+    for (var i = 0; i < workspaceModel.count; i++)
+      ids.push(String(workspaceModel.get(i).id))
+    workspaceIds = ids
+  }
+
   function updateWorkspace(index, key, value) {
-    var copy = cloneObject(workspaces)
-    copy[index][key] = value
-    if (key === "default" && value) {
-      for (var i = 0; i < copy.length; i++) {
-        if (i !== index && copy[i].monitor === copy[index].monitor)
-          copy[i].default = false
+    if (index < 0 || index >= workspaceModel.count) return
+    var row = workspaceModel.get(index)
+    // Focus-out fires editingFinished even when nothing was typed; only a real
+    // change may arm Apply.
+    if (row[key] === value) return
+    var monitor = key === "monitor" ? value : String(row.monitor)
+    workspaceModel.setProperty(index, key, value)
+    if ((key === "default" && value) || (key === "monitor" && row.default === true)) {
+      for (var i = 0; i < workspaceModel.count; i++) {
+        if (i === index) continue
+        var other = workspaceModel.get(i)
+        if (other.default === true && String(other.monitor) === String(monitor))
+          workspaceModel.setProperty(i, "default", false)
       }
     }
-    if (key === "monitor" && copy[index].default) {
-      for (var j = 0; j < copy.length; j++) {
-        if (j !== index && copy[j].monitor === value) copy[j].default = false
-      }
-    }
-    workspaces = copy
     markDirty()
   }
 
   function updateApplication(index, key, value) {
-    var copy = cloneObject(applications)
-    copy[index][key] = value
-    applications = copy
+    if (index < 0 || index >= applicationModel.count) return
+    if (applicationModel.get(index)[key] === value) return
+    applicationModel.setProperty(index, key, value)
     markDirty()
   }
 
@@ -113,36 +162,61 @@ Item {
     var index = installedPicker.currentIndex
     if (index < 0 || index >= installedApplications.length) return
     var selected = installedApplications[index]
-    for (var i = 0; i < applications.length; i++) {
-      if (applications[i].desktopId === selected.desktopId) {
+    for (var i = 0; i < applicationModel.count; i++) {
+      var row = applicationModel.get(i)
+      if (String(row.desktopId) === String(selected.desktopId)) {
         statusError = true
         statusText = selected.name + " is already configured"
         return
       }
+      // The backend applies one window rule per class and rejects duplicates,
+      // so refuse the pair here rather than failing on every later Apply.
+      if (selected.windowClass && String(row.windowClass) === String(selected.windowClass)) {
+        statusError = true
+        statusText = selected.name + " shares the window class “" + selected.windowClass
+          + "” with " + row.name + ", so only one of them can be placed"
+        return
+      }
     }
-    var workspace = workspaces.length ? Number(workspaces[0].id) : 1
-    var copy = cloneObject(applications)
-    copy.push({
-      desktopId: selected.desktopId,
-      name: selected.name,
-      windowClass: selected.windowClass,
+    applicationModel.append({
+      desktopId: String(selected.desktopId),
+      legacyPath: "",
+      name: String(selected.name),
+      windowClass: String(selected.windowClass),
       matchType: "class",
       ruleOptions: {},
-      command: selected.command,
-      workspace: workspace,
+      command: String(selected.command),
+      workspace: workspaceModel.count ? Number(workspaceModel.get(0).id) : 1,
       delay: 0,
       enabled: true,
       autostartSource: "plugin"
     })
-    applications = copy
     markDirty("Added " + selected.name)
   }
 
   function removeApplication(index) {
-    var copy = cloneObject(applications)
-    var removed = copy.splice(index, 1)
-    applications = copy
-    markDirty(removed.length ? "Removed " + removed[0].name : "Unsaved changes")
+    if (index < 0 || index >= applicationModel.count) return
+    var row = applicationModel.get(index)
+    var name = String(row.name)
+    if (String(row.autostartSource) === "external") {
+      // The autostart entry belongs to the application, so Apply cannot delete
+      // it. Say so instead of leaving an entry that keeps starting unseen.
+      confirmDialog.title = "Remove workspace placement for " + name + "?"
+      confirmDialog.message = name + " is started by an autostart entry that belongs to the "
+        + "application itself. Removing it here drops only the workspace placement rule — "
+        + name + " keeps starting at login until you turn it off in its own settings."
+      confirmDialog.actionText = "Remove placement"
+      confirmDialog.action = function() { root.dropApplication(index, name) }
+      confirmDialog.open()
+      return
+    }
+    dropApplication(index, name)
+  }
+
+  function dropApplication(index, name) {
+    if (index < 0 || index >= applicationModel.count) return
+    applicationModel.remove(index)
+    markDirty("Removed " + name)
   }
 
   function refresh() {
@@ -173,11 +247,14 @@ Item {
       revision = String(data.revision || "")
       legacyImport = data.legacyImport === true
       refocusDefaults = data.refocusDefaults !== false
-      focusDelayMs = Number(data.focusDelayMs || 8000)
+      // A stored 0 is a valid delay, so only a missing value takes the default.
+      var storedDelay = Number(data.focusDelayMs)
+      focusDelayMs = isNaN(storedDelay) ? 8000 : storedDelay
       monitors = data.monitors || []
       monitorNames = monitors.map(function(item) { return String(item.name) })
-      workspaces = data.workspaces || []
-      applications = data.applications || []
+      replaceRows(workspaceModel, data.workspaces || [])
+      replaceRows(applicationModel, data.applications || [])
+      refreshWorkspaceIds()
       installedApplications = data.installedApplications || []
       dirty = false
       statusError = false
@@ -201,8 +278,8 @@ Item {
       legacyImport: legacyImport,
       refocusDefaults: refocusDefaults,
       focusDelayMs: focusDelayMs,
-      workspaces: workspaces,
-      applications: applications
+      workspaces: root.workspaceList(),
+      applications: root.applicationList()
     }) + "\n"
     applyProcess.command = [backendPath, "apply"]
     applyProcess.running = true
@@ -215,8 +292,17 @@ Item {
       revision = String(data.revision || revision)
       dirty = false
       legacyImport = false
-      statusError = false
-      statusText = data.message || "Changes applied"
+      // The write succeeded; Hyprland may still have complained about it.
+      var warnings = data.warnings || []
+      statusError = warnings.length > 0
+      statusText = warnings.length ? warnings.join(" · ") : (data.message || "Changes applied")
+      // Row sources change on the backend once legacy entries are migrated.
+      for (var i = 0; i < applicationModel.count; i++) {
+        if (String(applicationModel.get(i).autostartSource) === "legacy") {
+          applicationModel.setProperty(i, "autostartSource", "plugin")
+          applicationModel.setProperty(i, "legacyPath", "")
+        }
+      }
     } catch (error) {
       statusError = true
       statusText = String(error)
@@ -231,12 +317,16 @@ Item {
       root.loading = false
       var output = String(inspectStdout.text || "").trim()
       var error = String(inspectStderr.text || "").trim()
-      if (exitCode !== 0 || !output) {
-        root.statusError = true
-        root.statusText = error || "Inspection backend returned no data"
+      // The backend reports its own failures as JSON on stdout with a non-zero
+      // status, so stdout is authoritative whenever it is present.
+      if (output) {
+        root.acceptInspection(output)
         return
       }
-      root.acceptInspection(output)
+      root.statusError = true
+      root.statusText = error || (exitCode !== 0
+        ? "Inspection backend failed with exit code " + exitCode
+        : "Inspection backend returned no data")
     }
   }
 
@@ -254,12 +344,16 @@ Item {
       root.applying = false
       var output = String(applyStdout.text || "").trim()
       var error = String(applyStderr.text || "").trim()
-      if (exitCode !== 0 || !output) {
-        root.statusError = true
-        root.statusText = error || "Apply backend returned no data"
+      // Stale revisions, validation failures and Hyprland errors all arrive as
+      // JSON on stdout alongside a non-zero status; keep the real message.
+      if (output) {
+        root.acceptApply(output)
         return
       }
-      root.acceptApply(output)
+      root.statusError = true
+      root.statusText = error || (exitCode !== 0
+        ? "Apply backend failed with exit code " + exitCode
+        : "Apply backend returned no data")
     }
   }
 
@@ -276,6 +370,9 @@ Item {
     id: window
     title: dirty ? "Autostart Editor — Unsaved changes" : "Autostart Editor"
     color: root.background
+    // The manifest keeps this plugin loaded, so the window is instantiated at
+    // shell start. Stay hidden until the host actually summons the panel.
+    visible: false
     implicitWidth: 1050
     implicitHeight: 760
     minimumSize: Qt.size(620, 500)
@@ -379,11 +476,11 @@ Item {
                 spacing: Style.space(4)
 
                 Repeater {
-                  model: root.workspaces
+                  model: workspaceModel
 
                   delegate: Ui.BorderSurface {
                     required property int index
-                    required property var modelData
+                    required property var model
                     Layout.fillWidth: true
                     implicitHeight: workspaceRow.implicitHeight + Style.space(12)
                     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, index % 2 ? 0.025 : 0.045)
@@ -395,12 +492,15 @@ Item {
                       anchors.right: parent.right
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.margins: Style.space(6)
-                      columns: window.width >= 760 ? 4 : 2
+                      // The four capped columns need ~640px including gaps and
+                      // margins, so only fall back to two below that. The fifth
+                      // column is a spacer that soaks up any leftover width.
+                      columns: window.width >= 680 ? 5 : 2
                       columnSpacing: Style.space(10)
                       rowSpacing: Style.space(6)
 
                       Text {
-                        text: "Workspace " + modelData.id
+                        text: "Workspace " + model.id
                         color: root.foreground
                         font.family: root.fontFamily
                         font.pixelSize: Style.font.body
@@ -409,26 +509,30 @@ Item {
                       }
                       Ui.TextField {
                         Layout.fillWidth: true
+                        // Workspace names are short labels, not sentences.
+                        Layout.maximumWidth: 220
                         placeholderText: "Optional name"
-                        text: modelData.name
+                        text: model.name
                         onEditingFinished: root.updateWorkspace(index, "name", text.trim())
                       }
                       Ui.Dropdown {
-                        Layout.preferredWidth: 180
+                        // Fits the longest DRM connector names, e.g. HDMI-A-1.
+                        Layout.preferredWidth: 150
                         showLabel: false
                         options: root.monitorNames
-                        value: modelData.monitor
+                        value: model.monitor
                         onChanged: function(value) { root.updateWorkspace(index, "monitor", value) }
                       }
                       Ui.Button {
                         Layout.preferredWidth: 120
-                        text: modelData.default ? "Default" : "Set default"
-                        iconText: modelData.default ? "󰄬" : ""
-                        selected: modelData.default
+                        text: model.default ? "Default" : "Set default"
+                        iconText: model.default ? "󰄬" : ""
+                        selected: model.default
                         bordered: true
                         focusable: true
-                        onClicked: root.updateWorkspace(index, "default", !modelData.default)
+                        onClicked: root.updateWorkspace(index, "default", !model.default)
                       }
+                      Item { Layout.fillWidth: true }
                     }
                   }
                 }
@@ -451,7 +555,7 @@ Item {
               SectionHeading {
                 Layout.fillWidth: true
                 title: "Login applications"
-                detail: root.applications.length + " configured"
+                detail: applicationModel.count + " configured"
               }
               QQC.ComboBox {
                 id: installedPicker
@@ -471,18 +575,21 @@ Item {
               }
             }
 
-            ListView {
-              id: applicationList
+            Item {
               Layout.fillWidth: true
               Layout.fillHeight: true
+
+            ListView {
+              id: applicationList
+              anchors.fill: parent
               clip: true
               spacing: Style.space(6)
-              model: root.applications
+              model: applicationModel
               QQC.ScrollBar.vertical: QQC.ScrollBar {}
 
               delegate: Ui.BorderSurface {
                     required property int index
-                    required property var modelData
+                    required property var model
                     width: ListView.view.width
                     height: implicitHeight
                     implicitHeight: applicationLayout.implicitHeight + Style.space(16)
@@ -502,7 +609,12 @@ Item {
                         spacing: Style.space(10)
 
                         ColumnLayout {
-                          Layout.fillWidth: true
+                          // Fixed rather than content-sized, so the command
+                          // field starts at the same place in every card.
+                          // Fits the longest desktop-entry names, e.g.
+                          // "LibreOffice Impress".
+                          Layout.fillWidth: false
+                          Layout.preferredWidth: 220
                           spacing: Style.space(4)
                           Text {
                             text: "Name"
@@ -513,58 +625,45 @@ Item {
                           }
                           Ui.TextField {
                             Layout.fillWidth: true
-                            text: modelData.name
+                            text: model.name
                             onEditingFinished: root.updateApplication(index, "name", text.trim())
                           }
                         }
 
                         ColumnLayout {
                           Layout.fillWidth: true
+                          // The one genuinely long field — paths plus
+                          // arguments — so it takes the rest of the row.
+                          Layout.maximumWidth: 640
                           spacing: Style.space(4)
                           Text {
-                            text: modelData.matchType === "title" ? "App / initial title" : "App / window class"
+                            text: "Command"
                             color: root.muted
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                             font.bold: true
                           }
-                          Text {
+                          Ui.TextField {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: Style.spacing.controlHeight
-                            text: modelData.windowClass
-                            color: root.muted
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.bodySmall
-                            verticalAlignment: Text.AlignVCenter
-                            elide: Text.ElideMiddle
+                            text: model.command
+                            enabled: model.autostartSource !== "external"
+                            opacity: enabled ? 1 : 0.65
+                            onEditingFinished: root.updateApplication(index, "command", text.trim())
                           }
                         }
-                      }
 
-                      ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: Style.space(4)
-                        Text {
-                          text: "Command"
-                          color: root.muted
-                          font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption
-                          font.bold: true
-                        }
-                        Ui.TextField {
-                          Layout.fillWidth: true
-                          text: modelData.command
-                          enabled: modelData.autostartSource !== "external"
-                          opacity: enabled ? 1 : 0.65
-                          onEditingFinished: root.updateApplication(index, "command", text.trim())
-                        }
+                        Item { Layout.fillWidth: true }
                       }
                       RowLayout {
                         Layout.fillWidth: true
                         spacing: Style.space(10)
 
                         ColumnLayout {
-                          Layout.preferredWidth: 150
+                          // Values are workspace numbers, at most two digits.
+                          // A nested layout fills by default; these controls
+                          // are fixed width, so they opt out.
+                          Layout.fillWidth: false
+                          Layout.preferredWidth: 90
                           spacing: Style.space(4)
                           Text {
                             text: "Workspace"
@@ -576,14 +675,16 @@ Item {
                           Ui.Dropdown {
                             Layout.fillWidth: true
                             showLabel: false
-                            options: root.workspaces.map(function(item) { return String(item.id) })
-                            value: String(modelData.workspace)
+                            options: root.workspaceIds
+                            value: String(model.workspace)
                             onChanged: function(value) { root.updateApplication(index, "workspace", Number(value)) }
                           }
                         }
 
                         ColumnLayout {
-                          Layout.preferredWidth: 120
+                          // Three digits at most, plus the stepper controls.
+                          Layout.fillWidth: false
+                          Layout.preferredWidth: 110
                           spacing: Style.space(4)
                           Text {
                             text: "Delay (seconds)"
@@ -597,8 +698,8 @@ Item {
                             label: ""
                             from: 0
                             to: 300
-                            value: Number(modelData.delay)
-                            enabled: modelData.autostartSource !== "external"
+                            value: Number(model.delay)
+                            enabled: model.autostartSource !== "external"
                             opacity: enabled ? 1 : 0.65
                             fieldWidth: width
                             onModified: function(value) { root.updateApplication(index, "delay", value) }
@@ -608,7 +709,9 @@ Item {
                         Item { Layout.fillWidth: true }
 
                         ColumnLayout {
-                          Layout.preferredWidth: 150
+                          // "External" is the widest label, plus the remove button.
+                          Layout.fillWidth: false
+                          Layout.preferredWidth: 130
                           spacing: Style.space(4)
                           Text {
                             text: "Launch"
@@ -622,17 +725,17 @@ Item {
                             spacing: Style.space(6)
                             Ui.Button {
                               Layout.fillWidth: true
-                              text: modelData.autostartSource === "external" ? "External" : (modelData.enabled ? "On" : "Off")
-                              selected: modelData.enabled
+                              text: model.autostartSource === "external" ? "External" : (model.enabled ? "On" : "Off")
+                              selected: model.enabled
                               bordered: true
                               focusable: true
-                              enabled: modelData.autostartSource !== "external"
+                              enabled: model.autostartSource !== "external"
                               opacity: enabled ? 1 : 0.65
-                              onClicked: root.updateApplication(index, "enabled", !modelData.enabled)
+                              onClicked: root.updateApplication(index, "enabled", !model.enabled)
                             }
                             Ui.Button {
                               iconText: "󰆴"
-                              tooltipText: "Remove " + modelData.name
+                              tooltipText: "Remove " + model.name
                               bordered: true
                               focusable: true
                               onClicked: root.removeApplication(index)
@@ -642,18 +745,22 @@ Item {
                       }
                     }
               }
+            }
 
-              Text {
-                anchors.centerIn: parent
-                width: Math.max(0, parent.width - Style.space(48))
-                visible: root.applications.length === 0 && !root.loading
-                text: "No login applications configured. Choose an installed application above."
-                color: root.muted
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-              }
+            // A sibling of the ListView, not a child: inside it the message
+            // would land in the flickable content item, which has no height
+            // while the model is empty.
+            Text {
+              anchors.centerIn: parent
+              width: Math.max(0, parent.width - Style.space(48))
+              visible: applicationModel.count === 0 && !root.loading
+              text: "No login applications configured. Choose an installed application above."
+              color: root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+            }
             }
           }
         }

@@ -556,18 +556,16 @@ def inspect() -> dict[str, Any]:
     monitors = discover_monitors()
     installed = discover_applications()
     data = load_state()
-    imported = False
     if data is None and HYPRLAND_FILE.is_file():
         try:
             block = legacy_managed_block(HYPRLAND_FILE.read_text(encoding="utf-8"))
         except OSError as error:
             raise BackendError(f"Could not read {HYPRLAND_FILE}: {error}") from error
         if block:
+            # The imported state is editable like any other; `legacyImport`
+            # tells apply() to replace the old block rather than duplicate it.
             data = import_legacy_state(block, installed)
-            imported = True
     state, warnings = normalize_state(data, monitors)
-    if imported:
-        warnings.insert(0, "Imported the existing Autostart Editor configuration as a read-only preview")
     return {
         "ok": True,
         "pluginId": PLUGIN_ID,
