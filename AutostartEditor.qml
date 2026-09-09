@@ -115,6 +115,7 @@ Item {
         windowClass: String(row.windowClass),
         matchType: String(row.matchType),
         ruleOptions: row.ruleOptions || {},
+        placeInWorkspace: row.placeInWorkspace !== false,
         command: String(row.command),
         workspace: Number(row.workspace),
         delay: Number(row.delay),
@@ -185,6 +186,7 @@ Item {
       windowClass: String(selected.windowClass),
       matchType: "class",
       ruleOptions: {},
+      placeInWorkspace: true,
       command: String(selected.command),
       workspace: workspaceModel.count ? Number(workspaceModel.get(0).id) : 1,
       delay: 0,
@@ -609,6 +611,27 @@ Item {
                         spacing: Style.space(10)
 
                         ColumnLayout {
+                          Layout.fillWidth: false
+                          Layout.preferredWidth: 130
+                          spacing: Style.space(4)
+                          Text {
+                            text: "Placement"
+                            color: root.muted
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption
+                            font.bold: true
+                          }
+                          Ui.Button {
+                            Layout.fillWidth: true
+                            text: model.placeInWorkspace === false ? "Anywhere" : "Workspace"
+                            selected: model.placeInWorkspace !== false
+                            bordered: true
+                            focusable: true
+                            onClicked: root.updateApplication(index, "placeInWorkspace", model.placeInWorkspace === false)
+                          }
+                        }
+
+                        ColumnLayout {
                           // Fixed rather than content-sized, so the command
                           // field starts at the same place in every card.
                           // Fits the longest desktop-entry names, e.g.
@@ -677,6 +700,8 @@ Item {
                             showLabel: false
                             options: root.workspaceIds
                             value: String(model.workspace)
+                            enabled: model.placeInWorkspace !== false
+                            opacity: enabled ? 1 : 0.45
                             onChanged: function(value) { root.updateApplication(index, "workspace", Number(value)) }
                           }
                         }

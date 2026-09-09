@@ -122,6 +122,33 @@ class StateTests(unittest.TestCase):
         self.assertIn('monitor = "Panel-42"', rendered)
         self.assertIn('o.window("editor-window"', rendered)
 
+    def test_background_application_does_not_get_a_workspace_rule(self):
+        state = {
+            "workspaces": [
+                {"id": 1, "name": "Work", "monitor": "Panel-42", "default": True}
+            ],
+            "applications": [
+                {
+                    "name": "Tray App", "windowClass": "tray-app",
+                    "placeInWorkspace": False, "workspace": 1,
+                    "command": "tray-app --silent", "delay": 0,
+                    "enabled": True, "desktopId": "tray-app",
+                }
+            ],
+        }
+        rendered = backend.render_hyprland(state)
+        self.assertNotIn('o.window("tray-app"', rendered)
+
+    def test_workspace_placement_defaults_on_for_existing_state(self):
+        normalized, _warnings = backend.normalize_state(
+            {
+                "workspaces": [{"id": 1, "monitor": "Panel-42"}],
+                "applications": [{"name": "Old App", "windowClass": "old-app"}],
+            },
+            [{"name": "Panel-42", "internal": True, "focused": True}],
+        )
+        self.assertTrue(normalized["applications"][0]["placeInWorkspace"])
+
     def test_legacy_block_is_discovered_without_a_hard_coded_marker_name(self):
         content = """before()
 -- >>> OLD-AUTOSTART-EDITOR BEGIN >>>

@@ -4,6 +4,10 @@ A native Omarchy Shell panel for managing login applications, workspace names,
 workspace-to-monitor assignments, and startup placement without hand-editing
 Hyprland Lua or XDG autostart files.
 
+Login startup and workspace placement are independent. An application can run
+in the background at login without receiving a Hyprland window rule, which is
+useful for system-tray applications started with a silent/minimized flag.
+
 > This project is an early development version. Review generated changes and
 > keep backups before using it on an important session.
 

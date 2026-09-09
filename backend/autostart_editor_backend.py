@@ -412,6 +412,7 @@ def import_legacy_state(block: str, installed: list[dict[str, str]]) -> dict[str
                 "windowClass": rule["windowClass"],
                 "matchType": rule["matchType"],
                 "ruleOptions": rule.get("ruleOptions", {}),
+                "placeInWorkspace": True,
                 "command": command,
                 "workspace": rule["workspace"],
                 "delay": delay,
@@ -534,6 +535,7 @@ def normalize_state(data: dict[str, Any] | None, monitors: list[dict[str, Any]])
                 "windowClass": str(raw.get("windowClass", "")),
                 "matchType": "title" if raw.get("matchType") == "title" else "class",
                 "ruleOptions": raw.get("ruleOptions", {}) if isinstance(raw.get("ruleOptions", {}), dict) else {},
+                "placeInWorkspace": bool(raw.get("placeInWorkspace", True)),
                 "command": str(raw.get("command", "")),
                 "workspace": as_int(raw.get("workspace", 1), 1),
                 "delay": as_int(raw.get("delay", 0), 0),
@@ -691,6 +693,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "windowClass": window_class,
                 "matchType": match_type,
                 "ruleOptions": rule_options,
+                "placeInWorkspace": bool(raw.get("placeInWorkspace", True)),
                 "command": command,
                 "workspace": workspace,
                 "delay": delay,
@@ -732,6 +735,8 @@ def render_hyprland(state: dict[str, Any]) -> str:
             parts.append("persistent = true")
         lines.append(f"hl.workspace_rule({{ {', '.join(parts)} }})")
     for application in state["applications"]:
+        if not application.get("placeInWorkspace", True):
+            continue
         workspace = lua_string(f"{application['workspace']} silent")
         if application.get("matchType") == "title":
             matcher = f"{{ title = {lua_string(application['windowClass'])} }}"
