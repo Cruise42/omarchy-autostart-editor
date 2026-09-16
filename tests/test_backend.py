@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import base64
 import importlib.util
 from pathlib import Path
 import re
@@ -75,8 +76,28 @@ class DesktopDiscoveryTests(unittest.TestCase):
             )
             self.assertIsNone(backend.parse_desktop_entry(path))
 
+    def test_omarchy_webapp_uses_stable_chromium_class(self):
+        command = 'omarchy-launch-webapp "https://example.test/tools/status"'
+        self.assertEqual(
+            backend.chromium_webapp_class(command, "google-chrome.desktop"),
+            "chrome-example.test__tools_status-Default",
+        )
+
+    def test_webapp_class_does_not_embed_port_or_query(self):
+        command = 'omarchy-launch-webapp "http://127.0.0.1:8787/?view=all"'
+        self.assertEqual(
+            backend.chromium_webapp_class(command, "google-chrome.desktop"),
+            "chrome-127.0.0.1__-Default",
+        )
+
 
 class StateTests(unittest.TestCase):
+    def test_live_window_classes_preserve_compositor_capitalization(self):
+        clients = '[{"class":"Hermes","initialClass":"Hermes"}]'
+        result = subprocess.CompletedProcess([], 0, clients, "")
+        with mock.patch.object(backend, "run", return_value=result):
+            self.assertEqual(backend.live_window_classes(), ["Hermes"])
+
     def test_disconnected_workspace_moves_to_internal_fallback(self):
         state = {
             "workspaces": [
@@ -292,6 +313,29 @@ class StateNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(state["focusDelayMs"], 0)
 
+    @mock.patch.object(
+        backend, "run",
+        return_value=subprocess.CompletedProcess([], 0, "google-chrome.desktop\n", ""),
+    )
+    def test_title_matched_webapp_migrates_to_stable_class(self, _run):
+        state, warnings = backend.normalize_state(
+            {
+                "workspaces": [{"id": 1, "monitor": "Panel-1"}],
+                "applications": [{
+                    "name": "Web Tool", "windowClass": "example.test_/tools",
+                    "matchType": "title",
+                    "command": 'omarchy-launch-webapp "https://example.test/tools"',
+                }],
+            },
+            self.MONITORS,
+        )
+        self.assertEqual(state["applications"][0]["matchType"], "class")
+        self.assertEqual(
+            state["applications"][0]["windowClass"],
+            "chrome-example.test__tools-Default",
+        )
+        self.assertTrue(warnings)
+
 
 class DesktopEntryTests(unittest.TestCase):
     def application(self, **overrides):
@@ -329,6 +373,28 @@ class DesktopEntryTests(unittest.TestCase):
         rendered = backend.render_desktop(self.application(command="/usr/bin/x --flag", delay=7))
         exec_line = next(line for line in rendered.splitlines() if line.startswith("Exec="))[5:]
         self.assertEqual(backend.extract_delay(exec_line), ("/usr/bin/x --flag", 7))
+
+    def test_webapp_entry_waits_for_browser_session_restore(self):
+        rendered = backend.render_desktop(self.application(
+            command='omarchy-launch-webapp "https://example.test/"',
+            windowClass="chrome-example.test__-Default",
+            matchType="class",
+        ))
+        self.assertIn(f"--restore-wait {backend.WEBAPP_RESTORE_WAIT_SECONDS}", rendered)
+        self.assertIn("--match-type class", rendered)
+
+
+class LaunchTests(unittest.TestCase):
+    def test_existing_window_prevents_duplicate_launch(self):
+        command = base64.urlsafe_b64encode(b"example-app").decode()
+        matcher = base64.urlsafe_b64encode(b"example-class").decode()
+        clients = '[{"class":"example-class","initialClass":"example-class"}]'
+        result = subprocess.CompletedProcess([], 0, clients, "")
+        with mock.patch.object(backend, "run", return_value=result), \
+                mock.patch.object(backend.subprocess, "Popen") as popen:
+            response = backend.launch(0, command, "class", matcher, 0)
+        self.assertFalse(response["launched"])
+        popen.assert_not_called()
 
     def test_base_desktop_id_strips_both_prefixes(self):
         self.assertEqual(backend.base_desktop_id("autostart-editor-editor"), "editor")

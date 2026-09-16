@@ -23,6 +23,7 @@ import sys
 import tempfile
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 
 PLUGIN_ID = "cruise42.autostart-editor"
@@ -42,6 +43,7 @@ INTERNAL_CONNECTOR_PREFIXES = ("edp-", "lvds-", "dsi-")
 # Reserved in an Exec value by the XDG Desktop Entry specification.
 DESKTOP_EXEC_RESERVED = " \t\n\"'\\><~|&;$*?#()`"
 DEFAULT_FOCUS_DELAY_MS = 8000
+WEBAPP_RESTORE_WAIT_SECONDS = 8
 
 MANAGED_BLOCK_PATTERN = re.compile(
     r"^-- >>> (?P<manager>[^\n]+) BEGIN >>>\s*$.*?"
@@ -74,6 +76,58 @@ def run(command: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(command, capture_output=True, text=True, check=False)
     except OSError as error:
         return subprocess.CompletedProcess(command, 127, "", str(error))
+
+
+def command_arguments(command: str) -> list[str]:
+    """Split a desktop command while discarding XDG field codes."""
+    try:
+        return [argument for argument in shlex.split(command) if not re.fullmatch(r"%[A-Za-z]", argument)]
+    except ValueError:
+        return []
+
+
+def webapp_url(command: str) -> str:
+    """Return the URL passed to Omarchy's web-app launcher, if present."""
+    arguments = command_arguments(command)
+    try:
+        launcher = next(index for index, value in enumerate(arguments) if Path(value).name == "omarchy-launch-webapp")
+    except StopIteration:
+        return ""
+    for argument in arguments[launcher + 1:]:
+        if argument.startswith(("http://", "https://")):
+            return argument
+    return ""
+
+
+def chromium_webapp_class(command: str, browser_desktop: str = "") -> str:
+    """Infer the stable Wayland class used by Chromium-family app windows.
+
+    Omarchy delegates web apps to the user's default supported browser. Keep
+    title matching for unknown browsers rather than guessing a class.
+    """
+    url = webapp_url(command)
+    if not url:
+        return ""
+    if not browser_desktop:
+        result = run(["xdg-settings", "get", "default-web-browser"])
+        browser_desktop = result.stdout.strip() if result.returncode == 0 else ""
+    browser = Path(browser_desktop).name.casefold()
+    prefixes = {
+        "google-chrome": "chrome",
+        "chromium": "chrome",
+        "brave": "brave",
+        "microsoft-edge": "msedge",
+        "vivaldi": "vivaldi",
+        "opera": "opera",
+        "helium": "helium",
+    }
+    prefix = next((value for name, value in prefixes.items() if browser.startswith(name)), "")
+    parsed = urlsplit(url)
+    if not prefix or not parsed.hostname:
+        return ""
+    identity = parsed.hostname + "_" + (parsed.path or "/")
+    identity = re.sub(r"[^A-Za-z0-9.-]", "_", identity)
+    return f"{prefix}-{identity}-Default"
 
 
 def as_int(value: Any, default: int) -> int:
@@ -158,6 +212,22 @@ def fallback_monitor(monitors: list[dict[str, Any]]) -> str:
     return str(monitors[0]["name"]) if monitors else ""
 
 
+def live_window_classes() -> list[str]:
+    """Return exact classes currently reported by Hyprland."""
+    result = run(["hyprctl", "clients", "-j"])
+    if result.returncode != 0:
+        return []
+    try:
+        clients = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return []
+    return unique_strings([
+        str(client.get(field, ""))
+        for client in clients if isinstance(client, dict)
+        for field in ("class", "initialClass")
+    ])
+
+
 def desktop_directories() -> list[Path]:
     data_home = xdg_dir("XDG_DATA_HOME", HOME / ".local" / "share")
     data_dirs = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
@@ -194,7 +264,10 @@ def parse_desktop_entry(path: Path) -> dict[str, str] | None:
     window_class = values.get("StartupWMClass", "").strip()
     if not window_class:
         app_id = re.search(r"(?:^|\s)--(?:app-id|class)(?:=|\s+)([^\s]+)", command)
-        window_class = app_id.group(1).strip('"\'') if app_id else desktop_id
+        window_class = (
+            app_id.group(1).strip('"\'') if app_id
+            else chromium_webapp_class(command) or desktop_id
+        )
     return {
         "desktopId": desktop_id,
         "name": name,
@@ -284,7 +357,7 @@ def extract_delay(command: str) -> tuple[str, int]:
     match = re.fullmatch(r"sh -c 'sleep (\d+); exec (.*)'", command)
     if match:
         return match.group(2), int(match.group(1))
-    launch = re.search(r"launch\s+--delay\s+(\d+)\s+--encoded\s+(\S+)", command)
+    launch = re.search(r"launch\s+--delay\s+(\d+).*?\s--encoded\s+(\S+)", command)
     if launch:
         try:
             decoded = base64.urlsafe_b64decode(launch.group(2).encode()).decode()
@@ -527,16 +600,26 @@ def normalize_state(data: dict[str, Any] | None, monitors: list[dict[str, Any]])
     for raw in data.get("applications", []):
         if not isinstance(raw, dict):
             continue
+        command = str(raw.get("command", ""))
+        window_class = str(raw.get("windowClass", ""))
+        match_type = "title" if raw.get("matchType") == "title" else "class"
+        inferred_webapp_class = chromium_webapp_class(command)
+        if inferred_webapp_class and match_type == "title":
+            window_class = inferred_webapp_class
+            match_type = "class"
+            warnings.append(
+                f"{raw.get('name', 'Web app')} now uses its stable browser window class"
+            )
         applications.append(
             {
                 "desktopId": str(raw.get("desktopId", "")),
                 "legacyPath": str(raw.get("legacyPath", "")),
                 "name": str(raw.get("name", "")),
-                "windowClass": str(raw.get("windowClass", "")),
-                "matchType": "title" if raw.get("matchType") == "title" else "class",
+                "windowClass": window_class,
+                "matchType": match_type,
                 "ruleOptions": raw.get("ruleOptions", {}) if isinstance(raw.get("ruleOptions", {}), dict) else {},
                 "placeInWorkspace": bool(raw.get("placeInWorkspace", True)),
-                "command": str(raw.get("command", "")),
+                "command": command,
                 "workspace": as_int(raw.get("workspace", 1), 1),
                 "delay": as_int(raw.get("delay", 0), 0),
                 "enabled": bool(raw.get("enabled", True)),
@@ -568,6 +651,23 @@ def inspect() -> dict[str, Any]:
             # tells apply() to replace the old block rather than duplicate it.
             data = import_legacy_state(block, installed)
     state, warnings = normalize_state(data, monitors)
+    classes_by_fold: dict[str, list[str]] = {}
+    for window_class in live_window_classes():
+        classes_by_fold.setdefault(window_class.casefold(), []).append(window_class)
+    for application in state["applications"]:
+        observed = classes_by_fold.get(application["windowClass"].casefold(), [])
+        if (
+            application["matchType"] == "class"
+            and not webapp_url(application["command"])
+            and len(observed) == 1
+            and observed[0] != application["windowClass"]
+        ):
+            old_class = application["windowClass"]
+            application["windowClass"] = observed[0]
+            warnings.append(
+                f"{application['name']} window class changed from {old_class} "
+                f"to {observed[0]} based on the running window"
+            )
     return {
         "ok": True,
         "pluginId": PLUGIN_ID,
@@ -843,12 +943,16 @@ def render_desktop(application: dict[str, Any]) -> str:
     command = base64.urlsafe_b64encode(application["command"].encode()).decode()
     name = application["name"].replace("\\", "\\\\")
     quoted_backend = desktop_exec_argument(str(backend))
+    match_value = base64.urlsafe_b64encode(application["windowClass"].encode()).decode()
+    restore_wait = WEBAPP_RESTORE_WAIT_SECONDS if webapp_url(application["command"]) else 0
     return "\n".join(
         [
             "[Desktop Entry]",
             "Type=Application",
             f"Name={name}",
-            f"Exec={quoted_backend} launch --delay {application['delay']} --encoded {command}",
+            f"Exec={quoted_backend} launch --delay {application['delay']} "
+            f"--match-type {application.get('matchType', 'class')} --match-encoded {match_value} "
+            f"--restore-wait {restore_wait} --encoded {command}",
             "Terminal=false",
             "X-GNOME-Autostart-enabled=true",
             DESKTOP_MARKER,
@@ -941,20 +1045,47 @@ def apply(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def launch(delay: int, encoded: str) -> dict[str, Any]:
+def matching_window_exists(match_type: str, match_value: str) -> bool:
+    result = run(["hyprctl", "clients", "-j"])
+    if result.returncode != 0:
+        return False
+    try:
+        clients = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return False
+    fields = ("title", "initialTitle") if match_type == "title" else ("class", "initialClass")
+    return any(
+        isinstance(client, dict)
+        and any(str(client.get(field, "")) == match_value for field in fields)
+        for client in clients
+    )
+
+
+def launch(delay: int, encoded: str, match_type: str = "class", match_encoded: str = "", restore_wait: int = 0) -> dict[str, Any]:
     if delay < 0 or delay > 300:
         raise BackendError("Delay must be between 0 and 300 seconds")
+    if restore_wait < 0 or restore_wait > 60:
+        raise BackendError("Session-restore wait must be between 0 and 60 seconds")
     try:
         command = base64.urlsafe_b64decode(encoded.encode()).decode()
-        arguments = [argument for argument in shlex.split(command) if not re.fullmatch(r"%[A-Za-z]", argument)]
+        arguments = command_arguments(command)
+        match_value = base64.urlsafe_b64decode(match_encoded.encode()).decode() if match_encoded else ""
     except (ValueError, UnicodeError) as error:
         raise BackendError("The stored launch command is invalid") from error
     if not arguments:
         raise BackendError("The stored launch command is empty")
-    if delay:
+    deadline = time.monotonic() + max(delay, restore_wait)
+    while match_value:
+        if matching_window_exists(match_type, match_value):
+            return {"ok": True, "launched": False, "message": "Application is already running"}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(1, remaining))
+    if not match_value and delay:
         time.sleep(delay)
     subprocess.Popen(arguments, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"ok": True}
+    return {"ok": True, "launched": True}
 
 
 def read_stdin_json() -> dict[str, Any]:
@@ -979,6 +1110,9 @@ def main() -> int:
     subparsers.add_parser("apply", help="Read state from stdin and apply it")
     launch_parser = subparsers.add_parser("launch", help=argparse.SUPPRESS)
     launch_parser.add_argument("--delay", type=int, default=0)
+    launch_parser.add_argument("--match-type", choices=("class", "title"), default="class")
+    launch_parser.add_argument("--match-encoded", default="")
+    launch_parser.add_argument("--restore-wait", type=int, default=0)
     launch_parser.add_argument("--encoded", required=True)
     args = parser.parse_args()
 
@@ -988,7 +1122,7 @@ def main() -> int:
         elif args.action == "apply":
             emit(apply(read_stdin_json()))
         else:
-            emit(launch(args.delay, args.encoded))
+            emit(launch(args.delay, args.encoded, args.match_type, args.match_encoded, args.restore_wait))
         return 0
     except BackendError as error:
         emit({"ok": False, "error": str(error)})
