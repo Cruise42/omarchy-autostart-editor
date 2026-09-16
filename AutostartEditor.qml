@@ -695,9 +695,8 @@ Item {
                             font.pixelSize: Style.font.caption
                             font.bold: true
                           }
-                          Ui.Dropdown {
+                          AdaptiveDropdown {
                             Layout.fillWidth: true
-                            showLabel: false
                             options: root.workspaceIds
                             value: String(model.workspace)
                             enabled: model.placeInWorkspace !== false
@@ -890,6 +889,159 @@ Item {
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
+    }
+  }
+
+  // The shell's standard Dropdown always opens below its trigger and limits
+  // the viewport to eight rows. Application cards can sit close to the panel
+  // bottom, where that leaves the final workspace choices outside the window.
+  // This compact selector is reparented to the window content item and chooses
+  // the side with enough room, while retaining wheel and scrollbar access.
+  component AdaptiveDropdown: QQC.ComboBox {
+    id: control
+
+    property var options: []
+    property string value: ""
+    signal changed(string value)
+
+    model: options
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.body
+
+    function syncCurrentIndex() {
+      var wanted = String(value)
+      for (var i = 0; i < options.length; i++) {
+        if (String(options[i]) === wanted) {
+          currentIndex = i
+          return
+        }
+      }
+      currentIndex = -1
+    }
+
+    Component.onCompleted: syncCurrentIndex()
+    onValueChanged: syncCurrentIndex()
+    onOptionsChanged: syncCurrentIndex()
+    onActivated: function(index) {
+      if (index < 0 || index >= options.length) return
+      var selected = String(options[index])
+      value = selected
+      changed(selected)
+    }
+
+    popup: QQC.Popup {
+      id: adaptivePopup
+      parent: control.Window.window ? control.Window.window.contentItem : control
+      padding: Style.spacing.hairline
+      focus: true
+
+      property real anchorX: 0
+      property real anchorY: 0
+      readonly property real gap: Style.spacing.xxs
+      readonly property real margin: Style.space(8)
+      readonly property real rowHeight: Style.spacing.popupRowHeight
+      readonly property int columnCount: control.options.length > 5 ? 2 : 1
+      readonly property int rowCount: Math.max(1, Math.ceil(control.options.length / columnCount))
+      readonly property real idealHeight: rowCount * rowHeight
+        + Math.max(0, rowCount - 1) * Style.spacing.labelGap
+        + topPadding + bottomPadding
+
+      function reposition() {
+        if (!parent) return
+        var point = control.mapToItem(parent, 0, 0)
+        width = control.width
+        // Size against the entire editor window, then slide the popup back
+        // inside its bounds. Qt's Popup positioning can otherwise report only
+        // the below-trigger region even after reparenting, making the final
+        // rows unreachable near the bottom edge.
+        height = Math.min(idealHeight, Math.max(rowHeight, parent.height - margin * 2))
+        anchorX = Math.max(margin, Math.min(point.x, parent.width - width - margin))
+        anchorY = Math.max(
+          margin,
+          Math.min(point.y + control.height + gap, parent.height - height - margin)
+        )
+        x = anchorX
+        y = anchorY
+      }
+
+      onAboutToShow: reposition()
+      onOpened: {
+        reposition()
+        optionList.currentIndex = control.currentIndex
+        if (optionList.currentIndex >= 0)
+          optionList.positionViewAtIndex(optionList.currentIndex, GridView.Contain)
+        optionList.forceActiveFocus()
+      }
+
+      Connections {
+        target: control
+        function onXChanged() { if (adaptivePopup.opened) adaptivePopup.reposition() }
+        function onYChanged() { if (adaptivePopup.opened) adaptivePopup.reposition() }
+        function onWidthChanged() { if (adaptivePopup.opened) adaptivePopup.reposition() }
+      }
+
+      background: Ui.BorderSurface {
+        color: Color.popups.background
+        borderSpec: Border.localOrSurfaceSpec("popups", "border", Color.popups.border, Color.popups.border, Style.normalBorderWidth)
+        radius: Style.cornerRadius
+      }
+
+      contentItem: GridView {
+        id: optionList
+        clip: true
+        model: control.options
+        boundsBehavior: Flickable.StopAtBounds
+        keyNavigationWraps: false
+        flow: GridView.FlowLeftToRight
+        cellWidth: width / adaptivePopup.columnCount
+        cellHeight: adaptivePopup.rowHeight + Style.spacing.labelGap
+        QQC.ScrollBar.vertical: QQC.ScrollBar {
+          policy: optionList.contentHeight > optionList.height
+            ? QQC.ScrollBar.AlwaysOn : QQC.ScrollBar.AlwaysOff
+        }
+
+        Keys.onEscapePressed: adaptivePopup.close()
+        Keys.onReturnPressed: selectCurrent()
+        Keys.onEnterPressed: selectCurrent()
+
+        function selectCurrent() {
+          if (currentIndex < 0 || currentIndex >= control.options.length) return
+          control.currentIndex = currentIndex
+          var selected = String(control.options[currentIndex])
+          control.value = selected
+          control.changed(selected)
+          adaptivePopup.close()
+        }
+
+        delegate: Rectangle {
+          required property var modelData
+          required property int index
+          width: optionList.cellWidth
+          height: adaptivePopup.rowHeight
+          color: index === optionList.currentIndex
+            ? Style.hoverFillFor(root.foreground, root.accent) : "transparent"
+
+          Text {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.margins: Style.spacing.controlPaddingX
+            text: String(modelData)
+            color: index === optionList.currentIndex
+              ? Style.hoverStateColor(root.foreground, root.accent) : root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onPositionChanged: optionList.currentIndex = parent.index
+            onClicked: optionList.selectCurrent()
+          }
+        }
+      }
     }
   }
 
