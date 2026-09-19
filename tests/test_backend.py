@@ -42,6 +42,11 @@ class MonitorTests(unittest.TestCase):
         result = backend.run(["a-command-that-does-not-exist-for-this-test"])
         self.assertEqual(result.returncode, 127)
 
+    def test_missing_hyprmoncfg_means_hyprland_owns_workspace_rules(self):
+        missing = subprocess.CompletedProcess(["hyprmoncfg"], 127, "", "not found")
+        with mock.patch.object(backend, "run", return_value=missing):
+            self.assertIsNone(backend.hyprmoncfg_context())
+
     def test_description_selector_resolves_to_current_connector(self):
         monitors = [{"name": "DP-7", "description": "Example Display 123"}]
         self.assertEqual(
@@ -523,6 +528,23 @@ class ApplyTests(unittest.TestCase):
             result = backend.apply(self.payload([]))
         self.assertTrue(result["ok"])
         self.assertEqual(result["warnings"], [])
+
+    def test_apply_without_hyprmoncfg_reloads_hyprland_directly(self):
+        commands = []
+
+        def no_hyprmoncfg(command):
+            commands.append(command)
+            if command[:2] == ["hyprmoncfg", "status"]:
+                return subprocess.CompletedProcess(command, 127, "", "not found")
+            if command == ["hyprctl", "workspacerules", "-j"]:
+                return subprocess.CompletedProcess(command, 0, "[]", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(backend, "run", side_effect=no_hyprmoncfg):
+            result = backend.apply(self.payload([]))
+        self.assertTrue(result["ok"])
+        self.assertIn(["hyprctl", "reload"], commands)
+        self.assertFalse(any(command[:2] == ["hyprmoncfg", "apply"] for command in commands))
 
     def test_hyprmoncfg_profile_uses_hardware_keys_and_exact_defaults(self):
         profile = Path(self.temporary.name) / "profiles" / "portable.json"
