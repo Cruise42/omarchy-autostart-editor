@@ -590,6 +590,7 @@ Item {
               QQC.ScrollBar.vertical: QQC.ScrollBar {}
 
               delegate: Ui.BorderSurface {
+                    id: applicationCard
                     required property int index
                     required property var model
                     width: ListView.view.width
@@ -698,10 +699,14 @@ Item {
                           AdaptiveDropdown {
                             Layout.fillWidth: true
                             options: root.workspaceIds
-                            value: String(model.workspace)
-                            enabled: model.placeInWorkspace !== false
+                            // Qualify the delegate row explicitly: ComboBox
+                            // also owns a `model` property for its choices.
+                            value: String(applicationCard.model.workspace)
+                            enabled: applicationCard.model.placeInWorkspace !== false
                             opacity: enabled ? 1 : 0.45
-                            onChanged: function(value) { root.updateApplication(index, "workspace", Number(value)) }
+                            onChanged: function(value) {
+                              root.updateApplication(applicationCard.index, "workspace", Number(value))
+                            }
                           }
                         }
 
@@ -905,6 +910,10 @@ Item {
     signal changed(string value)
 
     model: options
+    // The persisted workspace is authoritative. ComboBox can briefly reset
+    // currentIndex while a JavaScript-array model is being replaced, which
+    // otherwise leaves the closed control blank even though `value` is set.
+    displayText: value
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
 
@@ -919,9 +928,10 @@ Item {
       currentIndex = -1
     }
 
-    Component.onCompleted: syncCurrentIndex()
-    onValueChanged: syncCurrentIndex()
-    onOptionsChanged: syncCurrentIndex()
+    Component.onCompleted: Qt.callLater(syncCurrentIndex)
+    onValueChanged: Qt.callLater(syncCurrentIndex)
+    onOptionsChanged: Qt.callLater(syncCurrentIndex)
+    onCountChanged: Qt.callLater(syncCurrentIndex)
     onActivated: function(index) {
       if (index < 0 || index >= options.length) return
       var selected = String(options[index])
