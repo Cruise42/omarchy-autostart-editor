@@ -13,7 +13,7 @@ useful for system-tray applications started with a silent/minimized flag.
 
 ![The Autostart Editor panel: workspace names and monitor assignments above,
 login applications with their command, workspace, delay and launch
-state below](docs/panel.jpg)
+state below](preview.jpg)
 
 ## Design
 

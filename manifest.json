@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "author": "Cruise42",
   "license": "MIT",
-  "description": "Manage login applications and their Hyprland workspaces from an adaptive Omarchy panel.",
+  "description": "Native Omarchy panel for managing login applications and workspace placement",
   "kinds": [
     "panel",
     "bar-widget"
