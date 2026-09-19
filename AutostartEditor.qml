@@ -617,25 +617,26 @@ Item {
                     id: applicationCard
                     required property int index
                     required property var model
+                    readonly property bool wideLayout: width >= 980
                     width: ListView.view.width
                     height: implicitHeight
                     implicitHeight: applicationLayout.implicitHeight + Style.space(16)
                     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
                     radius: Style.cornerRadius
 
-                    ColumnLayout {
+                    GridLayout {
                       id: applicationLayout
                       anchors.left: parent.left
                       anchors.right: parent.right
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.margins: Style.space(8)
-                      spacing: Style.space(8)
-
-                      RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Style.space(10)
+                      columns: applicationCard.wideLayout ? 5 : 4
+                      columnSpacing: Style.space(10)
+                      rowSpacing: Style.space(8)
 
                         ColumnLayout {
+                          Layout.row: 0
+                          Layout.column: 0
                           // Fixed rather than content-sized, so the command
                           // field starts at the same place in every card.
                           // Fits the longest desktop-entry names, e.g.
@@ -658,10 +659,13 @@ Item {
                         }
 
                         ColumnLayout {
+                          Layout.row: 0
+                          Layout.column: 1
+                          Layout.columnSpan: applicationCard.wideLayout ? 1 : 3
                           Layout.fillWidth: true
                           // The one genuinely long field — paths plus
                           // arguments — so it takes the rest of the row.
-                          Layout.maximumWidth: 640
+                          Layout.minimumWidth: applicationCard.wideLayout ? 300 : 180
                           spacing: Style.space(4)
                           Text {
                             text: "Command"
@@ -679,13 +683,9 @@ Item {
                           }
                         }
 
-                        Item { Layout.fillWidth: true }
-                      }
-                      RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Style.space(10)
-
                         ColumnLayout {
+                          Layout.row: applicationCard.wideLayout ? 0 : 1
+                          Layout.column: applicationCard.wideLayout ? 2 : 0
                           // Includes a non-placement option plus workspace IDs.
                           // A nested layout fills by default; these controls
                           // are fixed width, so they opt out.
@@ -713,6 +713,8 @@ Item {
                         }
 
                         ColumnLayout {
+                          Layout.row: applicationCard.wideLayout ? 0 : 1
+                          Layout.column: applicationCard.wideLayout ? 3 : 1
                           // Three digits at most, plus the stepper controls.
                           Layout.fillWidth: false
                           Layout.preferredWidth: 110
@@ -737,9 +739,16 @@ Item {
                           }
                         }
 
-                        Item { Layout.fillWidth: true }
+                        Item {
+                          visible: !applicationCard.wideLayout
+                          Layout.row: 1
+                          Layout.column: 2
+                          Layout.fillWidth: true
+                        }
 
                         ColumnLayout {
+                          Layout.row: applicationCard.wideLayout ? 0 : 1
+                          Layout.column: applicationCard.wideLayout ? 4 : 3
                           // "External" is the widest label, plus the remove button.
                           Layout.fillWidth: false
                           Layout.preferredWidth: 130
@@ -773,7 +782,6 @@ Item {
                             }
                           }
                         }
-                      }
                     }
               }
             }
