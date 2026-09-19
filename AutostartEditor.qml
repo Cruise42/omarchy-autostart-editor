@@ -24,8 +24,8 @@ Item {
   property var monitors: []
   property var monitorNames: []
   property var installedApplications: []
-  // Workspace IDs as strings, for the per-application workspace dropdown.
-  property var workspaceIds: []
+  // A single selector controls both placement and the workspace number.
+  property var workspaceChoices: []
 
   // Row state lives in ListModels so a single field edit updates one row
   // through setProperty instead of replacing the model and resetting the view.
@@ -127,10 +127,10 @@ Item {
   }
 
   function refreshWorkspaceIds() {
-    var ids = []
+    var choices = ["Anywhere"]
     for (var i = 0; i < workspaceModel.count; i++)
-      ids.push(String(workspaceModel.get(i).id))
-    workspaceIds = ids
+      choices.push(String(workspaceModel.get(i).id))
+    workspaceChoices = choices
   }
 
   function updateWorkspace(index, key, value) {
@@ -157,6 +157,30 @@ Item {
     if (applicationModel.get(index)[key] === value) return
     applicationModel.setProperty(index, key, value)
     markDirty()
+  }
+
+  function updateApplicationPlacement(index, value) {
+    if (index < 0 || index >= applicationModel.count) return
+    var row = applicationModel.get(index)
+    if (value === "Anywhere") {
+      if (row.placeInWorkspace === false) return
+      applicationModel.setProperty(index, "placeInWorkspace", false)
+      markDirty()
+      return
+    }
+
+    var workspace = Number(value)
+    if (!Number.isInteger(workspace)) return
+    var changed = false
+    if (Number(row.workspace) !== workspace) {
+      applicationModel.setProperty(index, "workspace", workspace)
+      changed = true
+    }
+    if (row.placeInWorkspace === false) {
+      applicationModel.setProperty(index, "placeInWorkspace", true)
+      changed = true
+    }
+    if (changed) markDirty()
   }
 
   function addSelectedApplication() {
@@ -612,27 +636,6 @@ Item {
                         spacing: Style.space(10)
 
                         ColumnLayout {
-                          Layout.fillWidth: false
-                          Layout.preferredWidth: 130
-                          spacing: Style.space(4)
-                          Text {
-                            text: "Placement"
-                            color: root.muted
-                            font.family: root.fontFamily
-                            font.pixelSize: Style.font.caption
-                            font.bold: true
-                          }
-                          Ui.Button {
-                            Layout.fillWidth: true
-                            text: model.placeInWorkspace === false ? "Anywhere" : "Workspace"
-                            selected: model.placeInWorkspace !== false
-                            bordered: true
-                            focusable: true
-                            onClicked: root.updateApplication(index, "placeInWorkspace", model.placeInWorkspace === false)
-                          }
-                        }
-
-                        ColumnLayout {
                           // Fixed rather than content-sized, so the command
                           // field starts at the same place in every card.
                           // Fits the longest desktop-entry names, e.g.
@@ -683,11 +686,11 @@ Item {
                         spacing: Style.space(10)
 
                         ColumnLayout {
-                          // Values are workspace numbers, at most two digits.
+                          // Includes a non-placement option plus workspace IDs.
                           // A nested layout fills by default; these controls
                           // are fixed width, so they opt out.
                           Layout.fillWidth: false
-                          Layout.preferredWidth: 90
+                          Layout.preferredWidth: 130
                           spacing: Style.space(4)
                           Text {
                             text: "Workspace"
@@ -698,14 +701,13 @@ Item {
                           }
                           AdaptiveDropdown {
                             Layout.fillWidth: true
-                            options: root.workspaceIds
+                            options: root.workspaceChoices
                             // Qualify the delegate row explicitly: ComboBox
                             // also owns a `model` property for its choices.
-                            value: String(applicationCard.model.workspace)
-                            enabled: applicationCard.model.placeInWorkspace !== false
-                            opacity: enabled ? 1 : 0.45
+                            value: applicationCard.model.placeInWorkspace === false
+                              ? "Anywhere" : String(applicationCard.model.workspace)
                             onChanged: function(value) {
-                              root.updateApplication(applicationCard.index, "workspace", Number(value))
+                              root.updateApplicationPlacement(applicationCard.index, value)
                             }
                           }
                         }
