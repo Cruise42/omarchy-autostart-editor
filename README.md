@@ -78,6 +78,13 @@ python3 backend/autostart_editor_backend.py inspect | python3 -m json.tool
 The `inspect` command is read-only. The backend does not write anything unless
 the panel explicitly invokes `apply`.
 
+If `hyprmoncfg` is running, Autostart Editor treats its active saved profile as
+the final owner of workspace-to-monitor rules. Apply synchronizes the editor's
+manual workspace plan into that hardware-aware profile and then verifies the
+rules Hyprland actually loaded. An unsaved `draft` profile is rejected so the
+UI cannot claim success for settings that the monitor daemon will overwrite at
+the next login or hot-plug event.
+
 ## Installation
 
 Once published, install and enable the plugin with:

@@ -2,6 +2,7 @@
 
 import base64
 import importlib.util
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -40,6 +41,25 @@ class MonitorTests(unittest.TestCase):
     def test_missing_command_is_reported_without_crashing(self):
         result = backend.run(["a-command-that-does-not-exist-for-this-test"])
         self.assertEqual(result.returncode, 127)
+
+    def test_description_selector_resolves_to_current_connector(self):
+        monitors = [{"name": "DP-7", "description": "Example Display 123"}]
+        self.assertEqual(
+            backend.monitor_for_selector("desc:Example Display 123", monitors), "DP-7"
+        )
+
+    def test_effective_rules_report_monitor_and_default_conflicts(self):
+        rules = json.dumps([{
+            "workspaceString": "2", "monitor": "desc:Other Display", "default": True,
+        }])
+        completed = subprocess.CompletedProcess([], 0, rules, "")
+        desired = [{"id": 2, "monitor": "DP-7", "default": False}]
+        monitors = [{"name": "DP-7", "description": "Example Display"}]
+        with mock.patch.object(backend, "run", return_value=completed):
+            conflicts = backend.effective_workspace_conflicts(desired, monitors)
+        self.assertEqual(conflicts[0]["workspace"], 2)
+        self.assertEqual(conflicts[0]["activeMonitor"], "desc:Other Display")
+        self.assertTrue(conflicts[0]["activeDefault"])
 
 
 class DesktopDiscoveryTests(unittest.TestCase):
@@ -503,6 +523,38 @@ class ApplyTests(unittest.TestCase):
             result = backend.apply(self.payload([]))
         self.assertTrue(result["ok"])
         self.assertEqual(result["warnings"], [])
+
+    def test_hyprmoncfg_profile_uses_hardware_keys_and_exact_defaults(self):
+        profile = Path(self.temporary.name) / "profiles" / "portable.json"
+        profile.parent.mkdir()
+        profile.write_text(json.dumps({
+            "outputs": [
+                {"key": "panel-key", "name": "old-panel-name", "description": "Built In"},
+                {"key": "dock-key", "name": "DP-8", "description": "Dock Display"},
+            ],
+            "workspaces": {"strategy": "sequential", "rules": []},
+        }))
+        monitors = [
+            {"name": "eDP-9", "description": "Built In"},
+            {"name": "DP-8", "description": "Dock Display"},
+        ]
+        workspaces = [
+            {"id": 1, "monitor": "eDP-9", "default": True},
+            {"id": 2, "monitor": "DP-8", "default": False},
+        ]
+        backend.update_hyprmoncfg_profile(profile, workspaces, monitors)
+        saved = json.loads(profile.read_text())
+        self.assertEqual(saved["workspaces"]["strategy"], "manual")
+        self.assertEqual(saved["workspaces"]["rules"][0]["output_key"], "panel-key")
+        self.assertFalse(saved["workspaces"]["rules"][1]["default"])
+
+    def test_apply_refuses_unpersisted_hyprmoncfg_draft(self):
+        with mock.patch.object(
+            backend, "hyprmoncfg_context",
+            return_value={"managed": True, "profile": "", "path": None},
+        ):
+            with self.assertRaisesRegex(backend.BackendError, "final owner"):
+                backend.apply(self.payload([]))
 
 
 if __name__ == "__main__":

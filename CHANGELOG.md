@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Detect workspace rules that differ from the editor's saved configuration.
+- Synchronize monitor assignments and default workspaces with the active saved
+  `hyprmoncfg` profile before applying it.
+- Refuse misleading workspace changes while `hyprmoncfg` owns the rules through
+  an unsaved draft profile.
+
 ## 0.2.0
 
 ### Added

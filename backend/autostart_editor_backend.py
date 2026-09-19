@@ -65,6 +65,7 @@ STATE_FILE = PLUGIN_CONFIG_DIR / "config.json"
 HYPRLAND_FILE = CONFIG_HOME / "hypr" / "hyprland.lua"
 AUTOSTART_DIR = CONFIG_HOME / "autostart"
 BACKUP_DIR = STATE_HOME / PLUGIN_ID / "backups"
+HYPRMONCFG_PROFILE_DIR = CONFIG_HOME / "hyprmoncfg" / "profiles"
 
 
 class BackendError(Exception):
@@ -536,6 +537,122 @@ def revision() -> str:
     return digest.hexdigest()
 
 
+def hyprmoncfg_context() -> dict[str, Any] | None:
+    """Return the active saved hyprmoncfg profile when its daemon owns rules."""
+    result = run(["hyprmoncfg", "status", "--json"])
+    if result.returncode != 0:
+        return None
+    try:
+        status = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(status, dict) or not status.get("daemon", {}).get("running"):
+        return None
+    active = status.get("active_profile", {})
+    name = str(active.get("name", "")) if isinstance(active, dict) else ""
+    if not name or Path(name).name != name or name in {".", "..", "draft"}:
+        return {"managed": True, "profile": "", "path": None}
+    profile_path = HYPRMONCFG_PROFILE_DIR / f"{name}.json"
+    return {
+        "managed": True,
+        "profile": name,
+        "path": profile_path if profile_path.is_file() else None,
+    }
+
+
+def monitor_for_selector(selector: str, monitors: list[dict[str, Any]]) -> str:
+    """Resolve a Hyprland workspace monitor selector to a live connector."""
+    if selector.startswith("desc:"):
+        description = selector[5:]
+        return next(
+            (str(item["name"]) for item in monitors if str(item.get("description", "")) == description),
+            selector,
+        )
+    return selector
+
+
+def effective_workspace_conflicts(
+    workspaces: list[dict[str, Any]], monitors: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Compare editor intent with the rules Hyprland actually has loaded."""
+    result = run(["hyprctl", "workspacerules", "-j"])
+    if result.returncode != 0:
+        return []
+    try:
+        rules = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return []
+    effective: dict[int, dict[str, Any]] = {}
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict) or not str(rule.get("workspaceString", "")).isdigit():
+            continue
+        effective[int(rule["workspaceString"])] = rule
+    conflicts = []
+    for workspace in workspaces:
+        rule = effective.get(int(workspace["id"]))
+        if not rule:
+            continue
+        active_monitor = monitor_for_selector(str(rule.get("monitor", "")), monitors)
+        expected_monitor = str(workspace["monitor"])
+        active_default = bool(rule.get("default", False))
+        expected_default = bool(workspace.get("default", False))
+        if active_monitor != expected_monitor or active_default != expected_default:
+            conflicts.append({
+                "workspace": int(workspace["id"]),
+                "expectedMonitor": expected_monitor,
+                "activeMonitor": active_monitor,
+                "expectedDefault": expected_default,
+                "activeDefault": active_default,
+            })
+    return conflicts
+
+
+def update_hyprmoncfg_profile(profile_path: Path, workspaces: list[dict[str, Any]], monitors: list[dict[str, Any]]) -> None:
+    """Make hyprmoncfg's hardware-aware profile agree with editor intent."""
+    try:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise BackendError(f"Could not read active hyprmoncfg profile {profile_path}: {error}") from error
+    outputs = profile.get("outputs", []) if isinstance(profile, dict) else []
+    if not isinstance(outputs, list):
+        raise BackendError(f"Active hyprmoncfg profile {profile_path} has no output list")
+    live_descriptions = {str(item["name"]): str(item.get("description", "")) for item in monitors}
+    keys: dict[str, str] = {}
+    for monitor_name, description in live_descriptions.items():
+        output = next((item for item in outputs if isinstance(item, dict) and item.get("name") == monitor_name), None)
+        if output is None and description:
+            output = next((item for item in outputs if isinstance(item, dict) and item.get("description") == description), None)
+        if output and output.get("key"):
+            keys[monitor_name] = str(output["key"])
+    missing = sorted({str(item["monitor"]) for item in workspaces} - keys.keys())
+    if missing:
+        raise BackendError(
+            "The active hyprmoncfg profile does not identify connected output(s): " + ", ".join(missing)
+        )
+    workspace_config = profile.get("workspaces")
+    if not isinstance(workspace_config, dict):
+        workspace_config = {}
+        profile["workspaces"] = workspace_config
+    workspace_config.update({
+        "enabled": True,
+        "strategy": "manual",
+        "max_workspaces": max(int(item["id"]) for item in workspaces),
+        "monitor_order": list(dict.fromkeys(keys[str(item["monitor"])] for item in workspaces)),
+        "rules": [
+            {
+                "workspace": str(item["id"]),
+                "output_key": keys[str(item["monitor"])],
+                "output_name": str(item["monitor"]),
+                "default": bool(item.get("default", False)),
+                "persistent": True,
+            }
+            for item in workspaces
+        ],
+    })
+    rotate_backup(profile_path)
+    atomic_write(profile_path, json.dumps(profile, indent=2, ensure_ascii=False) + "\n")
+
+
 def default_workspaces(monitor: str) -> list[dict[str, Any]]:
     return [
         {
@@ -668,6 +785,28 @@ def inspect() -> dict[str, Any]:
                 f"{application['name']} window class changed from {old_class} "
                 f"to {observed[0]} based on the running window"
             )
+    manager = hyprmoncfg_context()
+    conflicts = effective_workspace_conflicts(state["workspaces"], monitors)
+    if conflicts:
+        details = []
+        for item in conflicts[:4]:
+            differences = []
+            if item["expectedMonitor"] != item["activeMonitor"]:
+                differences.append(f"{item['expectedMonitor']} expected, {item['activeMonitor']} active")
+            if item["expectedDefault"] != item["activeDefault"]:
+                differences.append(
+                    "default expected" if item["expectedDefault"] else "unexpectedly active as default"
+                )
+            details.append(f"{item['workspace']} ({'; '.join(differences)})")
+        summary = ", ".join(details)
+        if len(conflicts) > 4:
+            summary += f", and {len(conflicts) - 4} more"
+        warnings.append(f"Active Hyprland workspace rules differ from this configuration: {summary}")
+    if manager and not manager.get("path"):
+        warnings.append(
+            "hyprmoncfg is managing workspace rules but has no active saved profile; "
+            "save or select a hyprmoncfg profile before changing monitor assignments"
+        )
     return {
         "ok": True,
         "pluginId": PLUGIN_ID,
@@ -681,6 +820,12 @@ def inspect() -> dict[str, Any]:
         "applications": state["applications"],
         "installedApplications": installed,
         "warnings": warnings,
+        "workspaceConflicts": conflicts,
+        "workspaceManager": {
+            "name": "hyprmoncfg" if manager else "hyprland",
+            "profile": manager.get("profile", "") if manager else "",
+            "synchronized": bool(manager and manager.get("path")),
+        },
         "paths": {
             "state": str(STATE_FILE),
             "hyprland": str(HYPRLAND_FILE),
@@ -978,6 +1123,13 @@ def remove_orphaned_desktops(keep: set[Path]) -> None:
 
 def apply(payload: dict[str, Any]) -> dict[str, Any]:
     state = validate_payload(payload)
+    monitors = discover_monitors()
+    manager = hyprmoncfg_context()
+    if manager and not manager.get("path"):
+        raise BackendError(
+            "hyprmoncfg is currently the final owner of workspace rules, but it has no active saved "
+            "profile. Save or select a hyprmoncfg profile, then reload this editor."
+        )
     try:
         current_hyprland = HYPRLAND_FILE.read_text(encoding="utf-8") if HYPRLAND_FILE.exists() else ""
     except OSError as error:
@@ -1021,12 +1173,18 @@ def apply(payload: dict[str, Any]) -> dict[str, Any]:
             application["legacyPath"] = ""
     atomic_write(STATE_FILE, json.dumps(state, indent=2, ensure_ascii=False) + "\n")
 
+    if manager:
+        update_hyprmoncfg_profile(manager["path"], state["workspaces"], monitors)
+
     # Every write above has already landed, so a Hyprland complaint is reported
     # as a warning alongside the new revision. Failing here would strand the
     # panel on a stale revision, with the user's edits recoverable only by
     # discarding them.
     warnings: list[str] = []
-    reload_result = run(["hyprctl", "reload"])
+    reload_result = (
+        run(["hyprmoncfg", "apply", manager["profile"], "--confirm-timeout", "0"])
+        if manager else run(["hyprctl", "reload"])
+    )
     error_result = run(["hyprctl", "configerrors"])
     errors = error_result.stdout.strip() or error_result.stderr.strip()
     if reload_result.returncode != 0 or error_result.returncode != 0 or errors:
@@ -1037,6 +1195,12 @@ def apply(payload: dict[str, Any]) -> dict[str, Any]:
             or "reload failed"
         )
         warnings.append(f"Changes were saved, but Hyprland reported an error: {detail}")
+    conflicts = effective_workspace_conflicts(state["workspaces"], monitors)
+    if conflicts:
+        summary = ", ".join(str(item["workspace"]) for item in conflicts)
+        warnings.append(
+            "Changes were saved, but effective workspace rules still disagree for workspace(s): " + summary
+        )
     return {
         "ok": True,
         "message": "Changes applied" if not warnings else "Changes saved with warnings",
